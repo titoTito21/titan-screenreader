@@ -12,6 +12,67 @@ public class AccessibilityProviderManager : IDisposable
     private AccessibilityAPI _enabledApis = AccessibilityAPI.UIAutomation;
     private AccessibilityAPI _preferredApi = AccessibilityAPI.UIAutomation;
     private bool _disposed;
+    private bool _autoSwitchEnabled = true;
+    private string? _lastProcessName;
+
+    /// <summary>
+    /// Mapowanie procesów na preferowane API
+    /// </summary>
+    private static readonly Dictionary<string, AccessibilityAPI> ProcessApiMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Firefox/Thunderbird - IAccessible2
+        { "firefox", AccessibilityAPI.IAccessible2 },
+        { "thunderbird", AccessibilityAPI.IAccessible2 },
+        { "waterfox", AccessibilityAPI.IAccessible2 },
+        { "librewolf", AccessibilityAPI.IAccessible2 },
+
+        // LibreOffice - IAccessible2
+        { "soffice", AccessibilityAPI.IAccessible2 },
+        { "swriter", AccessibilityAPI.IAccessible2 },
+        { "scalc", AccessibilityAPI.IAccessible2 },
+        { "simpress", AccessibilityAPI.IAccessible2 },
+
+        // Java aplikacje - Java Access Bridge
+        { "java", AccessibilityAPI.JavaAccessBridge },
+        { "javaw", AccessibilityAPI.JavaAccessBridge },
+        { "eclipse", AccessibilityAPI.JavaAccessBridge },
+        { "idea64", AccessibilityAPI.JavaAccessBridge },
+        { "idea", AccessibilityAPI.JavaAccessBridge },
+        { "studio64", AccessibilityAPI.JavaAccessBridge },
+        { "netbeans64", AccessibilityAPI.JavaAccessBridge },
+
+        // Chromium - UI Automation (nowoczesne)
+        { "chrome", AccessibilityAPI.UIAutomation },
+        { "msedge", AccessibilityAPI.UIAutomation },
+        { "brave", AccessibilityAPI.UIAutomation },
+        { "vivaldi", AccessibilityAPI.UIAutomation },
+        { "opera", AccessibilityAPI.UIAutomation },
+
+        // Terminale - UI Automation (Windows Terminal) lub MSAA (cmd)
+        { "WindowsTerminal", AccessibilityAPI.UIAutomation },
+        { "cmd", AccessibilityAPI.MSAA },
+        { "powershell", AccessibilityAPI.MSAA },
+        { "pwsh", AccessibilityAPI.UIAutomation },
+        { "conhost", AccessibilityAPI.MSAA },
+
+        // Starsze aplikacje Win32 - MSAA
+        { "notepad", AccessibilityAPI.UIAutomation },
+        { "mspaint", AccessibilityAPI.MSAA },
+        { "wordpad", AccessibilityAPI.MSAA },
+    };
+
+    /// <summary>
+    /// Czy automatyczne przełączanie API jest włączone
+    /// </summary>
+    public bool AutoSwitchEnabled
+    {
+        get => _autoSwitchEnabled;
+        set
+        {
+            _autoSwitchEnabled = value;
+            Console.WriteLine($"AccessibilityProviderManager: Automatyczne przełączanie API {(value ? "włączone" : "wyłączone")}");
+        }
+    }
 
     /// <summary>
     /// Aktualnie włączone API
@@ -158,6 +219,103 @@ public class AccessibilityProviderManager : IDisposable
         }
 
         return "Brak dostępnych API";
+    }
+
+    /// <summary>
+    /// Automatycznie wybiera najlepsze API dla procesu
+    /// </summary>
+    /// <param name="processName">Nazwa procesu</param>
+    /// <returns>True jeśli API zostało zmienione</returns>
+    public bool AutoSelectApiForProcess(string? processName)
+    {
+        if (!_autoSwitchEnabled || string.IsNullOrEmpty(processName))
+            return false;
+
+        // Unikaj ponownego przełączania dla tego samego procesu
+        if (string.Equals(_lastProcessName, processName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        _lastProcessName = processName;
+
+        // Znajdź preferowane API dla procesu
+        AccessibilityAPI targetApi = AccessibilityAPI.UIAutomation; // domyślne
+
+        if (ProcessApiMap.TryGetValue(processName, out var mappedApi))
+        {
+            targetApi = mappedApi;
+        }
+        else
+        {
+            // Spróbuj dopasować częściowo (np. "eclipse" w "eclipse.exe")
+            foreach (var kvp in ProcessApiMap)
+            {
+                if (processName.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    targetApi = kvp.Value;
+                    break;
+                }
+            }
+        }
+
+        // Sprawdź czy API jest dostępne
+        if (_providers.TryGetValue(targetApi, out var provider) && provider.IsAvailable)
+        {
+            if (_preferredApi != targetApi)
+            {
+                var oldApi = _preferredApi;
+                PreferredApi = targetApi;
+
+                // Włącz API jeśli nie jest włączone
+                if (!_enabledApis.HasFlag(targetApi))
+                {
+                    SetApiEnabled(targetApi, true);
+                }
+
+                Console.WriteLine($"AccessibilityProviderManager: Automatycznie przełączono z {oldApi.GetPolishName()} na {targetApi.GetPolishName()} dla procesu {processName}");
+                return true;
+            }
+        }
+        else
+        {
+            // Fallback do UIAutomation jeśli preferowane API niedostępne
+            if (_preferredApi != AccessibilityAPI.UIAutomation)
+            {
+                PreferredApi = AccessibilityAPI.UIAutomation;
+                Console.WriteLine($"AccessibilityProviderManager: Fallback do UI Automation dla procesu {processName}");
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Pobiera sugerowane API dla procesu (bez przełączania)
+    /// </summary>
+    public AccessibilityAPI GetSuggestedApiForProcess(string? processName)
+    {
+        if (string.IsNullOrEmpty(processName))
+            return AccessibilityAPI.UIAutomation;
+
+        if (ProcessApiMap.TryGetValue(processName, out var api))
+            return api;
+
+        foreach (var kvp in ProcessApiMap)
+        {
+            if (processName.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase))
+                return kvp.Value;
+        }
+
+        return AccessibilityAPI.UIAutomation;
+    }
+
+    /// <summary>
+    /// Rejestruje niestandardowe mapowanie procesu na API
+    /// </summary>
+    public void RegisterProcessApiMapping(string processName, AccessibilityAPI api)
+    {
+        ProcessApiMap[processName] = api;
+        Console.WriteLine($"AccessibilityProviderManager: Zarejestrowano {processName} -> {api.GetPolishName()}");
     }
 
     /// <summary>

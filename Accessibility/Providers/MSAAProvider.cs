@@ -14,6 +14,7 @@ public class MSAAProvider : IAccessibilityProvider
     private bool _isActive;
     private bool _disposed;
     private IntPtr _eventHook;
+    private bool _isListening;
 
     public AccessibilityAPI ApiType => AccessibilityAPI.MSAA;
     public bool IsActive => _isActive;
@@ -34,7 +35,14 @@ public class MSAAProvider : IAccessibilityProvider
     private delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType,
         IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
 
-    private WinEventDelegate? _eventDelegate;
+    // WAŻNE: Delegat musi być przechowywany jako pole klasy aby uniknąć GC
+    private readonly WinEventDelegate _eventDelegate;
+
+    public MSAAProvider()
+    {
+        // Tworzymy delegat w konstruktorze, żeby GC go nie zebrał
+        _eventDelegate = OnWinEvent;
+    }
 
     [DllImport("user32.dll")]
     private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
@@ -59,6 +67,10 @@ public class MSAAProvider : IAccessibilityProvider
 
     public bool Initialize()
     {
+        // Zabezpieczenie przed podwójnym wywołaniem
+        if (_isActive)
+            return true;
+
         try
         {
             _isActive = true;
@@ -171,14 +183,18 @@ public class MSAAProvider : IAccessibilityProvider
 
     public void StartEventListening()
     {
+        // Zabezpieczenie przed podwójnym wywołaniem
+        if (_isListening)
+            return;
+
         try
         {
-            _eventDelegate = OnWinEvent;
             _eventHook = SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_VALUECHANGE,
                 IntPtr.Zero, _eventDelegate, 0, 0, WINEVENT_OUTOFCONTEXT);
 
             if (_eventHook != IntPtr.Zero)
             {
+                _isListening = true;
                 Console.WriteLine("MSAAProvider: Rozpoczęto nasłuchiwanie zdarzeń");
             }
         }
@@ -190,6 +206,9 @@ public class MSAAProvider : IAccessibilityProvider
 
     public void StopEventListening()
     {
+        if (!_isListening)
+            return;
+
         try
         {
             if (_eventHook != IntPtr.Zero)
@@ -197,6 +216,7 @@ public class MSAAProvider : IAccessibilityProvider
                 UnhookWinEvent(_eventHook);
                 _eventHook = IntPtr.Zero;
             }
+            _isListening = false;
         }
         catch (Exception ex)
         {

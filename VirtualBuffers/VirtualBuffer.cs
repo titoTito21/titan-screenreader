@@ -48,18 +48,23 @@ internal static class AriaUiaProperties
 /// Wirtualny bufor - płaska reprezentacja tekstowa dokumentu webowego
 /// Port z NVDA virtualBuffers/__init__.py
 ///
-/// Ulepszona obsługa dla Edge/Chrome na Windows 11:
-/// - Pobieranie atrybutów ARIA przez UIA
-/// - Lepsze wykrywanie poziomów nagłówków
-/// - Obsługa landmark regions
+/// Zgodnie z koncepcją NVDA:
+/// - Przechowuje drzewo UI jako płaski tekst z offsetami
+/// - Każdy węzeł ma startOffset i endOffset w buforze tekstowym
+/// - Umożliwia nawigację niezależną od fokusa
+/// - Używa textInfo API dla zarządzania offsetami
+/// - Wspiera ARIA atrybuty przez UIA
+/// - Dynamiczne aktualizacje przy zmianach w dokumencie
 /// </summary>
 public class VirtualBuffer : IDisposable
 {
     private readonly StringBuilder _buffer = new();
     private readonly List<VirtualBufferNode> _nodes = new();
+    private readonly Dictionary<int, VirtualBufferNode> _nodeCache = new();
     private int _caretOffset;
     private int _nextNodeId;
     private bool _disposed;
+    private bool _isRebuilding;
 
     /// <summary>Dokument źródłowy</summary>
     public AutomationElement? RootElement { get; private set; }
@@ -93,11 +98,11 @@ public class VirtualBuffer : IDisposable
     public int NodeCount => _nodes.Count;
 
     /// <summary>
-    /// Ładuje dokument do wirtualnego bufora
+    /// Ładuje dokument do wirtualnego bufora (asynchronicznie)
     /// </summary>
     public async Task LoadDocumentAsync(AutomationElement document)
     {
-        if (IsLoading)
+        if (IsLoading || _isRebuilding)
             return;
 
         IsLoading = true;
@@ -105,9 +110,7 @@ public class VirtualBuffer : IDisposable
 
         try
         {
-            _buffer.Clear();
-            _nodes.Clear();
-            _nextNodeId = 0;
+            ClearBuffer();
 
             // Wykryj typ przeglądarki
             DetectBrowser(document);
@@ -116,7 +119,7 @@ public class VirtualBuffer : IDisposable
 
             await Task.Run(() =>
             {
-                TraverseAndBuild(document, 0, null);
+                BuildBuffer(document);
             });
 
             Console.WriteLine($"VirtualBuffer: Załadowano {_nodes.Count} węzłów, {_buffer.Length} znaków");
@@ -132,11 +135,87 @@ public class VirtualBuffer : IDisposable
     }
 
     /// <summary>
+    /// Czyści bufor i przygotowuje do ponownego ładowania
+    /// </summary>
+    private void ClearBuffer()
+    {
+        _buffer.Clear();
+        _nodes.Clear();
+        _nodeCache.Clear();
+        _nextNodeId = 0;
+        _caretOffset = 0;
+    }
+
+    /// <summary>
+    /// Przebudowuje bufor (np. po zmianie w dokumencie)
+    /// Zachowuje bieżącą pozycję karetki jeśli to możliwe
+    /// </summary>
+    public void Rebuild()
+    {
+        if (RootElement == null || IsLoading || _isRebuilding)
+            return;
+
+        _isRebuilding = true;
+        try
+        {
+            // Zapamiętaj bieżący węzeł na podstawie offset
+            var currentNode = GetNodeAtOffset(_caretOffset);
+            int savedNodeId = currentNode?.NodeId ?? -1;
+
+            ClearBuffer();
+            BuildBuffer(RootElement);
+
+            // Spróbuj przywrócić pozycję karetki
+            if (savedNodeId >= 0)
+            {
+                var restoredNode = _nodes.FirstOrDefault(n => n.NodeId == savedNodeId);
+                if (restoredNode != null)
+                {
+                    _caretOffset = restoredNode.StartOffset;
+                }
+            }
+
+            Console.WriteLine($"VirtualBuffer: Przebudowano - {_nodes.Count} węzłów");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"VirtualBuffer: Błąd przebudowy: {ex.Message}");
+        }
+        finally
+        {
+            _isRebuilding = false;
+        }
+    }
+
+    /// <summary>
+    /// Buduje bufor z drzewa UI Automation
+    /// </summary>
+    private void BuildBuffer(AutomationElement document)
+    {
+        TraverseAndBuild(document, 0, null);
+
+        // Zbuduj cache po zakończeniu budowy
+        RebuildCache();
+    }
+
+    /// <summary>
+    /// Przebudowuje cache węzłów dla szybszego dostępu
+    /// </summary>
+    private void RebuildCache()
+    {
+        _nodeCache.Clear();
+        foreach (var node in _nodes)
+        {
+            _nodeCache[node.NodeId] = node;
+        }
+    }
+
+    /// <summary>
     /// Synchronicznie ładuje dokument
     /// </summary>
     public void LoadDocument(AutomationElement document)
     {
-        if (IsLoading)
+        if (IsLoading || _isRebuilding)
             return;
 
         IsLoading = true;
@@ -144,14 +223,12 @@ public class VirtualBuffer : IDisposable
 
         try
         {
-            _buffer.Clear();
-            _nodes.Clear();
-            _nextNodeId = 0;
+            ClearBuffer();
 
             // Wykryj typ przeglądarki
             DetectBrowser(document);
 
-            TraverseAndBuild(document, 0, null);
+            BuildBuffer(document);
 
             Console.WriteLine($"VirtualBuffer: Załadowano {_nodes.Count} węzłów, {_buffer.Length} znaków");
         }
@@ -714,10 +791,40 @@ public class VirtualBuffer : IDisposable
 
     /// <summary>
     /// Pobiera węzeł na danym offsecie
+    /// Używa binarnego wyszukiwania dla wydajności
     /// </summary>
     public VirtualBufferNode? GetNodeAtOffset(int offset)
     {
-        return _nodes.FirstOrDefault(n => n.ContainsOffset(offset));
+        if (_nodes.Count == 0)
+            return null;
+
+        // Binary search dla wydajności - węzły są posortowane po StartOffset
+        int left = 0;
+        int right = _nodes.Count - 1;
+
+        while (left <= right)
+        {
+            int mid = left + (right - left) / 2;
+            var node = _nodes[mid];
+
+            if (node.ContainsOffset(offset))
+                return node;
+
+            if (offset < node.StartOffset)
+                right = mid - 1;
+            else
+                left = mid + 1;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Pobiera węzeł po ID z cache
+    /// </summary>
+    public VirtualBufferNode? GetNodeById(int nodeId)
+    {
+        return _nodeCache.TryGetValue(nodeId, out var node) ? node : null;
     }
 
     /// <summary>
@@ -727,29 +834,303 @@ public class VirtualBuffer : IDisposable
     {
         start = Math.Clamp(start, 0, _buffer.Length);
         end = Math.Clamp(end, start, _buffer.Length);
+
+        if (start >= end)
+            return "";
+
         return _buffer.ToString(start, end - start);
     }
 
     /// <summary>
-    /// Pobiera bieżącą linię
+    /// Oblicza offset początku linii dla danego offsetu
+    /// </summary>
+    public int GetLineStartOffset(int offset)
+    {
+        offset = Math.Clamp(offset, 0, _buffer.Length);
+
+        int start = offset;
+        while (start > 0 && _buffer[start - 1] != '\n')
+            start--;
+
+        return start;
+    }
+
+    /// <summary>
+    /// Oblicza offset końca linii dla danego offsetu
+    /// </summary>
+    public int GetLineEndOffset(int offset)
+    {
+        offset = Math.Clamp(offset, 0, _buffer.Length);
+
+        int end = offset;
+        while (end < _buffer.Length && _buffer[end] != '\n')
+            end++;
+
+        return end;
+    }
+
+    /// <summary>
+    /// Pobiera zakres linii dla danego offsetu
+    /// </summary>
+    public (int start, int end) GetLineRange(int offset)
+    {
+        int start = GetLineStartOffset(offset);
+        int end = GetLineEndOffset(offset);
+        return (start, end);
+    }
+
+    /// <summary>
+    /// Znajduje offset początku słowa zawierającego dany offset
+    /// </summary>
+    public int GetWordStartOffset(int offset)
+    {
+        offset = Math.Clamp(offset, 0, _buffer.Length);
+
+        int start = offset;
+        while (start > 0 && !char.IsWhiteSpace(_buffer[start - 1]))
+            start--;
+
+        return start;
+    }
+
+    /// <summary>
+    /// Znajduje offset końca słowa zawierającego dany offset
+    /// </summary>
+    public int GetWordEndOffset(int offset)
+    {
+        offset = Math.Clamp(offset, 0, _buffer.Length);
+
+        int end = offset;
+        while (end < _buffer.Length && !char.IsWhiteSpace(_buffer[end]))
+            end++;
+
+        return end;
+    }
+
+    /// <summary>
+    /// Pobiera zakres słowa dla danego offsetu
+    /// </summary>
+    public (int start, int end) GetWordRange(int offset)
+    {
+        int start = GetWordStartOffset(offset);
+        int end = GetWordEndOffset(offset);
+        return (start, end);
+    }
+
+    /// <summary>
+    /// Pobiera bieżącą linię na podstawie pozycji karetki
     /// </summary>
     public (int start, int end, string text) GetCurrentLine()
     {
         if (_buffer.Length == 0)
             return (0, 0, "");
 
-        int start = _caretOffset;
-        int end = _caretOffset;
+        var (start, end) = GetLineRange(_caretOffset);
+        string text = GetTextRange(start, end);
+        return (start, end, text);
+    }
 
-        // Znajdź początek linii
-        while (start > 0 && _buffer[start - 1] != '\n')
-            start--;
+    /// <summary>
+    /// Przesuwa do następnego znaku i zwraca jego opis fonetyczny
+    /// </summary>
+    public string MoveToNextCharacter()
+    {
+        if (_caretOffset < _buffer.Length - 1)
+        {
+            _caretOffset++;
+        }
+        else if (_caretOffset >= _buffer.Length)
+        {
+            return "Koniec dokumentu";
+        }
 
-        // Znajdź koniec linii
-        while (end < _buffer.Length && _buffer[end] != '\n')
-            end++;
+        return GetCharacterAtOffset(_caretOffset);
+    }
 
-        return (start, end, _buffer.ToString(start, end - start));
+    /// <summary>
+    /// Przesuwa do poprzedniego znaku i zwraca jego opis fonetyczny
+    /// </summary>
+    public string MoveToPreviousCharacter()
+    {
+        if (_caretOffset > 0)
+        {
+            _caretOffset--;
+        }
+        else
+        {
+            return "Początek dokumentu";
+        }
+
+        return GetCharacterAtOffset(_caretOffset);
+    }
+
+    /// <summary>
+    /// Pobiera opis fonetyczny znaku na danej pozycji
+    /// </summary>
+    public string GetCharacterAtOffset(int offset)
+    {
+        if (offset < 0 || offset >= _buffer.Length)
+            return "";
+
+        char ch = _buffer[offset];
+        return GetPhoneticDescription(ch);
+    }
+
+    /// <summary>
+    /// Pobiera bieżący znak (bez przesuwania)
+    /// </summary>
+    public string GetCurrentCharacter()
+    {
+        return GetCharacterAtOffset(_caretOffset);
+    }
+
+    /// <summary>
+    /// Zwraca fonetyczny opis znaku (po polsku)
+    /// </summary>
+    private static string GetPhoneticDescription(char ch)
+    {
+        return char.ToUpperInvariant(ch) switch
+        {
+            ' ' => "spacja",
+            '\n' => "nowa linia",
+            '\r' => "powrót karetki",
+            '\t' => "tabulator",
+            '.' => "kropka",
+            ',' => "przecinek",
+            ';' => "średnik",
+            ':' => "dwukropek",
+            '!' => "wykrzyknik",
+            '?' => "znak zapytania",
+            '-' => "myślnik",
+            '_' => "podkreślenie",
+            '(' => "nawias otwierający",
+            ')' => "nawias zamykający",
+            '[' => "nawias kwadratowy otwierający",
+            ']' => "nawias kwadratowy zamykający",
+            '{' => "nawias klamrowy otwierający",
+            '}' => "nawias klamrowy zamykający",
+            '<' => "mniejszy niż",
+            '>' => "większy niż",
+            '/' => "ukośnik",
+            '\\' => "ukośnik odwrotny",
+            '@' => "małpa",
+            '#' => "hash",
+            '$' => "dolar",
+            '%' => "procent",
+            '^' => "daszek",
+            '&' => "ampersand",
+            '*' => "gwiazdka",
+            '+' => "plus",
+            '=' => "równa się",
+            '"' => "cudzysłów",
+            '\'' => "apostrof",
+            '`' => "grawis",
+            '~' => "tylda",
+            '|' => "kreska pionowa",
+            // Wielkie litery
+            >= 'A' and <= 'Z' => $"duże {ch}",
+            // Małe litery i inne
+            _ => ch.ToString()
+        };
+    }
+
+    /// <summary>
+    /// Przesuwa do następnego słowa i zwraca je
+    /// </summary>
+    public string MoveToNextWord()
+    {
+        if (_caretOffset >= _buffer.Length)
+            return "Koniec dokumentu";
+
+        // Pomiń bieżące słowo (znaki nie-białe)
+        while (_caretOffset < _buffer.Length && !char.IsWhiteSpace(_buffer[_caretOffset]))
+            _caretOffset++;
+
+        // Pomiń białe znaki
+        while (_caretOffset < _buffer.Length && char.IsWhiteSpace(_buffer[_caretOffset]))
+            _caretOffset++;
+
+        if (_caretOffset >= _buffer.Length)
+            return "Koniec dokumentu";
+
+        return GetWordAtOffset(_caretOffset);
+    }
+
+    /// <summary>
+    /// Przesuwa do poprzedniego słowa i zwraca je
+    /// </summary>
+    public string MoveToPreviousWord()
+    {
+        if (_caretOffset <= 0)
+            return "Początek dokumentu";
+
+        // Cofnij o jeden znak
+        _caretOffset--;
+
+        // Pomiń białe znaki wstecz
+        while (_caretOffset > 0 && char.IsWhiteSpace(_buffer[_caretOffset]))
+            _caretOffset--;
+
+        // Znajdź początek słowa
+        while (_caretOffset > 0 && !char.IsWhiteSpace(_buffer[_caretOffset - 1]))
+            _caretOffset--;
+
+        return GetWordAtOffset(_caretOffset);
+    }
+
+    /// <summary>
+    /// Pobiera słowo na danej pozycji
+    /// </summary>
+    public string GetWordAtOffset(int offset)
+    {
+        if (offset < 0 || offset >= _buffer.Length)
+            return "";
+
+        var (start, end) = GetWordRange(offset);
+        return GetTextRange(start, end);
+    }
+
+    /// <summary>
+    /// Pobiera bieżące słowo (bez przesuwania)
+    /// </summary>
+    public string GetCurrentWord()
+    {
+        if (_buffer.Length == 0 || _caretOffset >= _buffer.Length)
+            return "";
+
+        var (start, _) = GetWordRange(_caretOffset);
+        return GetWordAtOffset(start);
+    }
+
+    /// <summary>
+    /// Przesuwa do następnej linii i zwraca jej tekst
+    /// </summary>
+    public string MoveToNextLine()
+    {
+        var (_, end, _) = GetCurrentLine();
+        if (end < _buffer.Length)
+        {
+            _caretOffset = end + 1;
+            var (_, _, text) = GetCurrentLine();
+            return string.IsNullOrWhiteSpace(text) ? "pusta linia" : text;
+        }
+        return "Koniec dokumentu";
+    }
+
+    /// <summary>
+    /// Przesuwa do poprzedniej linii i zwraca jej tekst
+    /// </summary>
+    public string MoveToPreviousLine()
+    {
+        var (start, _, _) = GetCurrentLine();
+        if (start > 0)
+        {
+            _caretOffset = start - 1;
+            var (newStart, _, text) = GetCurrentLine();
+            _caretOffset = newStart;
+            return string.IsNullOrWhiteSpace(text) ? "pusta linia" : text;
+        }
+        return "Początek dokumentu";
     }
 
     /// <summary>

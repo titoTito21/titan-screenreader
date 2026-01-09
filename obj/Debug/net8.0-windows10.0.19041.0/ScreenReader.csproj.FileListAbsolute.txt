@@ -35,3 +35,9 @@ C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\obj\Debug\n
 C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\obj\Debug\net8.0-windows10.0.19041.0\ScreenReader.pdb
 C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\obj\Debug\net8.0-windows10.0.19041.0\ScreenReader.genruntimeconfig.cache
 C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\obj\Debug\net8.0-windows10.0.19041.0\ref\ScreenReader.dll
+C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\sfx\cursor_static.ogg
+C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\sfx\zoomin.ogg
+C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\sfx\zoomout.ogg
+C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\sfx\caninteract.ogg
+C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\sfx\menu_closed.ogg
+C:\Users\win8k\.gemini\antigravity\scratch\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\sfx\menu_expanded.ogg

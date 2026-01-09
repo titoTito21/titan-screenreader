@@ -13,6 +13,9 @@ public class GestureManager
     private readonly List<GestureBinding> _bindings = new();
     private readonly SpeechManager _speechManager;
     private bool _inputHelpMode = false;
+
+    /// <summary>Event dla przełączania trybu browse/focus (Insert+Space)</summary>
+    public event Action? ToggleBrowseMode;
     
     public GestureManager(SpeechManager speechManager)
     {
@@ -110,11 +113,18 @@ public class GestureManager
     private void RegisterDefaultGestures()
     {
         // Tryb pomocy klawiatury
-        RegisterGesture("insert+1", Keys.D1, 
+        RegisterGesture("insert+1", Keys.D1,
             () => InputHelpMode = !InputHelpMode,
             "Przełącz pomoc klawiatury",
             "Włącza lub wyłącza tryb pomocy klawiatury",
             "System");
+
+        // Przełączanie trybu browse/focus (Insert+Space)
+        RegisterGesture("insert+space", Keys.Space,
+            () => ToggleBrowseMode?.Invoke(),
+            "Przełącz tryb przeglądania",
+            "Przełącza między trybem przeglądania a trybem formularza",
+            "Przeglądanie");
         
         // Odczyt czasu
         RegisterGesture("insert+f12", Keys.F12,

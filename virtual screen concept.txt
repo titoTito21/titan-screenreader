@@ -1,0 +1,24 @@
+funkcja: wirtualny ekran
+wirtualny ekran pozwoliłby na nawigację po oknie przy pomocy myszki/touchpada, 
+eksploracja touchpada to jest przesuwanie palcem, tak jak myszką się przesuwa, screenreader,z dźwiękami mówiłby, kontrolkę, która jest pod palcem, byłyby dźwięki jak w nawigacji obiektowej, wszystkie puste kontrolki panelu byłyby ignorowane
+przesunięcie w lewo, poprzedni element
+przesunięcie w prawo - następny element
+dwukrotne stuknięcie - aktywuje element, dźwięk doubleclick.ogg
+od tej pory, są elementy systemowe, kiedy aktywuje się element systemowy/gest, odtwarza się dźwięk sfx/system_item.ogg
+stuknięcie 1krotnie dwoma palcami, menu kontekstowe
+stuknięcie 2krotnie 2 palcami, przejdź na pulpit, po pulpicie też nawigacja ma działać w wirtualnym ekranie
+1krotne stuknięcie 3 palcami, przejście na menu start
+przesunięcie dwoma palcami w lewo, alt+shift+tab
+przesunięcie dwoma palcami w prawo, alt+tab
+przesunięcie trzema palcami w lewo, page up
+przesunięcie trzema palcami w prawo, page down
+przesunięcie dwoma palcami w dół, następny element pokrętła - kategoria
+przesunięcie dwoma palcami w górę - poprzedni element pokrętła - kategoria
+przesunięcie jednym palcem w dół, następny element danej kategorii pokrętła
+i w górę - poprzedni
+insert+alt+spacja lub insert+pojedyńczy klik myszką, włącza się/wyłącza się wirtualny ekran
+dźwięki: vscreenOff.ogg wyłączony
+vscreenOn.ogg - włączony wirtualny ekran
+komunikaty: Wirtualny ekran włączony
+Wirtualny ekran wyłączony
+W trakcie eksploracji palcem, wiesz o co mi chodzi, kiedy dany element jest pod palcem będzie mówił w pozycji która jest, przez suround/stereo aby można było wiedzieć, gdzie dany element jest, tts ma być w stereo, coś rewolucyjnego przynajmniej

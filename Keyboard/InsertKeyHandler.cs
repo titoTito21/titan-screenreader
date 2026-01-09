@@ -100,6 +100,6 @@ public enum NVDAModifierConfig
     /// <summary>Zwykły Insert jako modyfikator</summary>
     ExtendedInsert = 4,
 
-    /// <summary>Domyślna konfiguracja: oba Insert</summary>
-    Default = NumpadInsert | ExtendedInsert
+    /// <summary>Domyślna konfiguracja: oba Insert i CapsLock</summary>
+    Default = CapsLock | NumpadInsert | ExtendedInsert
 }

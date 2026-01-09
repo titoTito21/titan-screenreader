@@ -10,6 +10,7 @@ public class DialogMonitor : IDisposable
     private IntPtr _lastWindow = IntPtr.Zero;
     private readonly WinEventDelegate _eventDelegate;
     private bool _disposed;
+    private bool _isMonitoring;
 
     // WinAPI Constants
     private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
@@ -76,8 +77,12 @@ public class DialogMonitor : IDisposable
 
     public void StartMonitoring()
     {
+        // Zabezpieczenie przed podwójnym wywołaniem
+        if (_isMonitoring)
+            return;
+
         Console.WriteLine("DialogMonitor: Rozpoczynam monitorowanie okien");
-        
+
         // Hook window foreground events
         _hookHandle = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
@@ -89,6 +94,7 @@ public class DialogMonitor : IDisposable
         }
         else
         {
+            _isMonitoring = true;
             Console.WriteLine("DialogMonitor: Hook zainstalowany pomyślnie");
         }
     }
@@ -304,6 +310,7 @@ public class DialogMonitor : IDisposable
         {
             UnhookWinEvent(_hookHandle);
             _hookHandle = IntPtr.Zero;
+            _isMonitoring = false;
             Console.WriteLine("DialogMonitor: Hook usunięty");
         }
 

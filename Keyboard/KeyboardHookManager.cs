@@ -42,6 +42,12 @@ public class KeyboardHookManager : IDisposable
     private const int VK_RETURN = 0x0D;     // Enter
     private const int VK_ADD = 0x6B;        // NumPad +
     private const int VK_SUBTRACT = 0x6D;   // NumPad -
+    private const int VK_DIVIDE = 0x6F;     // NumPad /
+    private const int VK_OEM_1 = 0xBA;      // ; (średnik)
+    private const int VK_OEM_7 = 0xDE;      // ' (apostrof)
+    private const int VK_SPACE = 0x20;      // Spacja
+    private const int VK_CAPSLOCK = 0x14;   // CapsLock
+    private const int VK_SCROLLLOCK = 0x91; // ScrollLock
 
     // Klawisze nawigacyjne współdzielone z NumPadem
     private const int VK_HOME = 0x24;       // NumPad 7 (przy wyłączonym NumLock)
@@ -52,13 +58,32 @@ public class KeyboardHookManager : IDisposable
     private LowLevelKeyboardProc? _proc;
     private IntPtr _hookID = IntPtr.Zero;
     private bool _disposed;
+    private int _hookErrorCount;
+    private const int MAX_HOOK_ERRORS = 5;
+    private readonly object _hookLock = new();
+    private DateTime _lastHookReinstall = DateTime.MinValue;
+    private static readonly TimeSpan HookReinstallCooldown = TimeSpan.FromSeconds(2);
 
     // Stan modyfikatorów
     private bool _ctrlPressed;
     private bool _altPressed;
     private bool _shiftPressed;
     private bool _insertPressed;
+    private bool _capsLockPressed;
     private InsertKeyHandler.InsertKeyType _lastInsertType;
+
+    // Stan klawiszy blokujących (toggle keys)
+    private bool _lastCapsLockState;
+    private bool _lastNumLockState;
+    private bool _lastScrollLockState;
+    private bool _toggleStatesInitialized;
+
+    /// <summary>
+    /// Tryb nawigacji liniowej po oknie (bez konieczności rozwijania potomków)
+    /// Gdy true - nawigacja liniowa po wszystkich elementach okna
+    /// Gdy false - zaawansowana nawigacja (rodzic/potomek)
+    /// </summary>
+    private bool _linearNavigationMode = true;
 
     // Konfiguracja modyfikatora NVDA
     public NVDAModifierConfig NVDAModifierConfig { get; set; } = NVDAModifierConfig.Default;
@@ -77,6 +102,43 @@ public class KeyboardHookManager : IDisposable
     public event Action? StopSpeaking;
     public event Action? ClickAction;
     public event Action? ShowMenu;
+
+    /// <summary>Event dla kliknięcia NumPad Slash (/) - aktywacja nawigowanego elementu</summary>
+    public event Action? NumpadSlashAction;
+
+    /// <summary>Event dla przełączania pokrętła (Num Minus lub Caps/Ins+')</summary>
+    public event Action? ToggleDial;
+
+    /// <summary>Event dla przełączania trybu nawigacji liniowej (Num + lub Caps/Ins+;)</summary>
+    public event Action? ToggleLinearNavigation;
+
+    /// <summary>Czy tryb nawigacji liniowej jest włączony</summary>
+    public bool IsLinearNavigationMode
+    {
+        get => _linearNavigationMode;
+        set => _linearNavigationMode = value;
+    }
+
+    /// <summary>Event dla nawigacji do następnego elementu w trybie liniowym</summary>
+    public event Action? LinearMoveToNext;
+
+    /// <summary>Event dla nawigacji do poprzedniego elementu w trybie liniowym</summary>
+    public event Action? LinearMoveToPrevious;
+
+    /// <summary>Event dla poprzedniej kategorii pokrętła (Num 4)</summary>
+    public event Action? DialPreviousCategory;
+
+    /// <summary>Event dla następnej kategorii pokrętła (Num 6)</summary>
+    public event Action? DialNextCategory;
+
+    /// <summary>Event dla poprzedniego elementu w kategorii (Num 8)</summary>
+    public event Action? DialPreviousItem;
+
+    /// <summary>Event dla następnego elementu w kategorii (Num 2)</summary>
+    public event Action? DialNextItem;
+
+    /// <summary>Czy tryb pokrętła jest włączony</summary>
+    public bool IsDialEnabled { get; set; }
 
     // Eventy dla pól edycyjnych
     public event Action? MoveToPreviousCharacter;
@@ -98,31 +160,20 @@ public class KeyboardHookManager : IDisposable
     /// <summary>Event dla wpisanego słowa (echo klawiatury)</summary>
     public event Action<string>? WordTyped;
 
+    /// <summary>Event do pobrania znaku przed kursorem (dla Backspace)</summary>
+    public event Func<char?>? CharacterBeingDeleted;
+
+    /// <summary>Event wywoływany gdy znak został usunięty przez Backspace</summary>
+    public event Action<char>? CharacterDeleted;
+
     /// <summary>Czy czytnik jest w polu edycyjnym</summary>
     public bool IsInEditField { get; set; }
 
-    /// <summary>Czy czytnik jest w terminalu</summary>
-    public bool IsInTerminal { get; set; }
+    /// <summary>Czy czytnik jest w polu kombi (ComboBox)</summary>
+    public bool IsInComboBox { get; set; }
 
-    // Eventy dla terminali - nawigacja tekstowa NumPad
-    /// <summary>NumPad 8 - poprzednia linia</summary>
-    public event Func<string>? TerminalPreviousLine;
-    /// <summary>NumPad 2 - następna linia</summary>
-    public event Func<string>? TerminalNextLine;
-    /// <summary>NumPad 4 - poprzedni znak</summary>
-    public event Func<string>? TerminalPreviousChar;
-    /// <summary>NumPad 6 - następny znak</summary>
-    public event Func<string>? TerminalNextChar;
-    /// <summary>NumPad 1 - poprzedni wyraz</summary>
-    public event Func<string>? TerminalPreviousWord;
-    /// <summary>NumPad 3 - następny wyraz</summary>
-    public event Func<string>? TerminalNextWord;
-    /// <summary>NumPad 7 - poprzednia strona</summary>
-    public event Func<string>? TerminalPreviousPage;
-    /// <summary>NumPad 9 - następna strona</summary>
-    public event Func<string>? TerminalNextPage;
-    /// <summary>NumPad 5 - odczytaj bieżącą linię</summary>
-    public event Func<string>? TerminalReadLine;
+    /// <summary>Event dla nawigacji strzałkami w ComboBox</summary>
+    public event Action<int>? ComboBoxArrowNavigation;
 
     // Bufor dla budowania słowa
     private readonly System.Text.StringBuilder _wordBuffer = new();
@@ -139,12 +190,175 @@ public class KeyboardHookManager : IDisposable
     /// </summary>
     public event Func<char, bool, bool>? QuickNavProcessed;
 
+    /// <summary>
+    /// Event dla nawigacji strzałkami w browse mode - otrzymuje (vkCode, ctrl)
+    /// Zwraca true jeśli obsłużony (browse mode aktywny i nie w polu edycji)
+    /// </summary>
+    public event Func<int, bool, bool>? BrowseModeArrowNavigation;
+
+    /// <summary>Czy browse mode jest aktywny (ustawiane przez ScreenReaderEngine)</summary>
+    public bool IsInBrowseMode { get; set; }
+
+    /// <summary>Event wywoływany gdy zmieni się stan CapsLock (true = włączony)</summary>
+    public event Action<bool>? CapsLockToggled;
+
+    /// <summary>Event wywoływany gdy zmieni się stan NumLock (true = włączony)</summary>
+    public event Action<bool>? NumLockToggled;
+
+    /// <summary>Event wywoływany gdy zmieni się stan ScrollLock (true = włączony)</summary>
+    public event Action<bool>? ScrollLockToggled;
+
     public void Start()
     {
-        _proc = HookCallback;
-        _hookID = SetHook(_proc);
-        Console.WriteLine("KeyboardHookManager: Hook zainstalowany");
+        lock (_hookLock)
+        {
+            _proc = HookCallback;
+            _hookID = SetHook(_proc);
+            _hookErrorCount = 0;
+
+            // Zainicjalizuj stany klawiszy blokujących
+            InitializeToggleKeyStates();
+
+            if (_hookID != IntPtr.Zero)
+            {
+                Console.WriteLine("KeyboardHookManager: Hook zainstalowany pomyślnie");
+            }
+            else
+            {
+                Console.WriteLine("KeyboardHookManager: BŁĄD - nie udało się zainstalować hooka");
+            }
+        }
     }
+
+    /// <summary>
+    /// Inicjalizuje stany klawiszy blokujących (CapsLock, NumLock, ScrollLock)
+    /// </summary>
+    private void InitializeToggleKeyStates()
+    {
+        _lastCapsLockState = IsCapsLockOn();
+        _lastNumLockState = IsNumLockOn();
+        _lastScrollLockState = IsScrollLockOn();
+        _toggleStatesInitialized = true;
+        Console.WriteLine($"KeyboardHookManager: Stany klawiszy - CapsLock: {_lastCapsLockState}, NumLock: {_lastNumLockState}, ScrollLock: {_lastScrollLockState}");
+    }
+
+    /// <summary>
+    /// Sprawdza czy CapsLock jest włączony
+    /// </summary>
+    private static bool IsCapsLockOn()
+    {
+        return (GetKeyState(VK_CAPSLOCK) & 0x0001) != 0;
+    }
+
+    /// <summary>
+    /// Sprawdza czy NumLock jest włączony
+    /// </summary>
+    private static bool IsNumLockOn()
+    {
+        return (GetKeyState(VK_NUMLOCK) & 0x0001) != 0;
+    }
+
+    /// <summary>
+    /// Sprawdza czy ScrollLock jest włączony
+    /// </summary>
+    private static bool IsScrollLockOn()
+    {
+        return (GetKeyState(VK_SCROLLLOCK) & 0x0001) != 0;
+    }
+
+    /// <summary>
+    /// Sprawdza zmiany stanu klawiszy blokujących i wywołuje eventy
+    /// </summary>
+    private void CheckToggleKeyStateChanges(int vkCode)
+    {
+        // Sprawdź tylko dla odpowiednich klawiszy
+        switch (vkCode)
+        {
+            case VK_CAPSLOCK:
+                {
+                    bool currentState = IsCapsLockOn();
+                    if (currentState != _lastCapsLockState)
+                    {
+                        _lastCapsLockState = currentState;
+                        Console.WriteLine($"CapsLock: {(currentState ? "włączony" : "wyłączony")}");
+                        CapsLockToggled?.Invoke(currentState);
+                    }
+                }
+                break;
+
+            case VK_NUMLOCK:
+                {
+                    bool currentState = IsNumLockOn();
+                    if (currentState != _lastNumLockState)
+                    {
+                        _lastNumLockState = currentState;
+                        Console.WriteLine($"NumLock: {(currentState ? "włączony" : "wyłączony")}");
+                        NumLockToggled?.Invoke(currentState);
+                    }
+                }
+                break;
+
+            case VK_SCROLLLOCK:
+                {
+                    bool currentState = IsScrollLockOn();
+                    if (currentState != _lastScrollLockState)
+                    {
+                        _lastScrollLockState = currentState;
+                        Console.WriteLine($"ScrollLock: {(currentState ? "włączony" : "wyłączony")}");
+                        ScrollLockToggled?.Invoke(currentState);
+                    }
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Reinstaluje hook klawiatury (np. po utracie stabilności)
+    /// </summary>
+    public void ReinstallHook()
+    {
+        lock (_hookLock)
+        {
+            // Sprawdź cooldown
+            if (DateTime.Now - _lastHookReinstall < HookReinstallCooldown)
+            {
+                Console.WriteLine("KeyboardHookManager: Reinstalacja hooka w cooldownie, pomijam");
+                return;
+            }
+
+            Console.WriteLine("KeyboardHookManager: Reinstalacja hooka klawiatury...");
+
+            // Usuń stary hook
+            if (_hookID != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(_hookID);
+                _hookID = IntPtr.Zero;
+            }
+
+            // Krótka pauza dla stabilności
+            System.Threading.Thread.Sleep(50);
+
+            // Zainstaluj nowy hook
+            _proc = HookCallback;
+            _hookID = SetHook(_proc);
+            _hookErrorCount = 0;
+            _lastHookReinstall = DateTime.Now;
+
+            if (_hookID != IntPtr.Zero)
+            {
+                Console.WriteLine("KeyboardHookManager: Hook reinstalowany pomyślnie");
+            }
+            else
+            {
+                Console.WriteLine("KeyboardHookManager: BŁĄD - reinstalacja hooka nie powiodła się");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sprawdza czy hook jest aktywny
+    /// </summary>
+    public bool IsHookActive => _hookID != IntPtr.Zero;
 
     private IntPtr SetHook(LowLevelKeyboardProc proc)
     {
@@ -164,14 +378,6 @@ public class KeyboardHookManager : IDisposable
 
     [DllImport("user32.dll")]
     private static extern short GetKeyState(int nVirtKey);
-
-    /// <summary>
-    /// Sprawdza czy NumLock jest wyłączony
-    /// </summary>
-    private static bool IsNumLockOff()
-    {
-        return (GetKeyState(VK_NUMLOCK) & 0x0001) == 0;
-    }
 
     /// <summary>
     /// Sprawdza czy klawisz pochodzi z NumPada (nie ma flagi EXTENDED)
@@ -219,6 +425,12 @@ public class KeyboardHookManager : IDisposable
                     bool handled = ProcessKeyDown(vkCode, flags);
                     if (handled)
                         return (IntPtr)1; // Blokuj klawisz
+                }
+
+                // Wykryj zmiany stanu klawiszy blokujących po puszczeniu klawisza
+                if (isKeyUp && _toggleStatesInitialized)
+                {
+                    CheckToggleKeyStateChanges(vkCode);
                 }
             }
         }
@@ -268,6 +480,7 @@ public class KeyboardHookManager : IDisposable
                 break;
 
             case InsertKeyHandler.VK_CAPSLOCK:
+                _capsLockPressed = isDown;
                 if (NVDAModifierConfig.HasFlag(NVDAModifierConfig.CapsLock))
                 {
                     _insertPressed = isDown;
@@ -315,11 +528,118 @@ public class KeyboardHookManager : IDisposable
             return true;
         }
 
-        // Enter - akcja kliknięcia (nie blokuj)
-        if (vkCode == 0x0D)
+        // Zwykły Enter (z flagą EXTENDED) - normalne działanie, ogłoś kliknięcie ale nie blokuj
+        // NumPad Enter jest obsługiwany osobno w ProcessNumpadNavigation
+        if (vkCode == 0x0D && (flags & LLKHF_EXTENDED) != 0)
         {
             ClickAction?.Invoke();
             return false;
+        }
+
+        // ========================================
+        // POKRĘTŁO - Num Minus lub CapsLock/Insert + apostrof (')
+        // ========================================
+        if (NumpadNavigationEnabled && vkCode == VK_SUBTRACT)
+        {
+            ToggleDial?.Invoke();
+            return true;
+        }
+
+        // Insert/CapsLock+' - alternatywa dla Num Minus (pokrętło)
+        if (_insertPressed && vkCode == VK_OEM_7)
+        {
+            ToggleDial?.Invoke();
+            return true;
+        }
+
+        // ========================================
+        // PRZEŁĄCZNIK NAWIGACJI LINIOWEJ - Num + lub CapsLock/Insert + średnik (;)
+        // ========================================
+        if (NumpadNavigationEnabled && vkCode == VK_ADD)
+        {
+            ToggleLinearNavigation?.Invoke();
+            return true;
+        }
+
+        // Insert/CapsLock+; - alternatywa dla Num +
+        if (_insertPressed && vkCode == VK_OEM_1)
+        {
+            ToggleLinearNavigation?.Invoke();
+            return true;
+        }
+
+        // ========================================
+        // KLIKNIĘCIE - Num Slash (/) lub CapsLock/Insert + Space
+        // ========================================
+        if (NumpadNavigationEnabled && vkCode == VK_DIVIDE)
+        {
+            NumpadSlashAction?.Invoke();
+            return true;
+        }
+
+        // Insert/CapsLock+Space - alternatywa dla Num Slash (aktywacja)
+        if (_insertPressed && vkCode == VK_SPACE && !_ctrlPressed && !_altPressed)
+        {
+            NumpadSlashAction?.Invoke();
+            return true;
+        }
+
+        // ========================================
+        // NAWIGACJA Insert/CapsLock+strzałki (alternatywa dla NumPad 2,4,6,8)
+        // W trybie pokrętła: Left/Right = kategoria, Up/Down = element
+        // ========================================
+        if (_insertPressed && !_ctrlPressed && !_altPressed)
+        {
+            // W trybie pokrętła CapsLock+strzałki działają jak pokrętło
+            if (IsDialEnabled)
+            {
+                switch (vkCode)
+                {
+                    case VK_LEFT:  // CapsLock+Left = poprzednia kategoria
+                        DialPreviousCategory?.Invoke();
+                        return true;
+
+                    case VK_RIGHT: // CapsLock+Right = następna kategoria
+                        DialNextCategory?.Invoke();
+                        return true;
+
+                    case VK_UP:    // CapsLock+Up = poprzedni element w kategorii
+                        DialPreviousItem?.Invoke();
+                        return true;
+
+                    case VK_DOWN:  // CapsLock+Down = następny element w kategorii
+                        DialNextItem?.Invoke();
+                        return true;
+                }
+            }
+            else
+            {
+                // Normalna nawigacja obiektowa
+                switch (vkCode)
+                {
+                    case VK_LEFT:  // CapsLock+Left = NumPad 4 (poprzedni element/rodzeństwo)
+                        if (_linearNavigationMode)
+                            LinearMoveToPrevious?.Invoke();
+                        else
+                            MoveToPreviousElement?.Invoke();
+                        return true;
+
+                    case VK_RIGHT: // CapsLock+Right = NumPad 6 (następny element/rodzeństwo)
+                        if (_linearNavigationMode)
+                            LinearMoveToNext?.Invoke();
+                        else
+                            MoveToNextElement?.Invoke();
+                        return true;
+
+                    case VK_UP:    // CapsLock+Up = NumPad 8 (rodzic)
+                        MoveToParent?.Invoke();
+                        return true;
+
+                    case VK_DOWN:  // CapsLock+Down = NumPad 2 (potomek)
+                        MoveToFirstChild?.Invoke();
+                        return true;
+                }
+            }
         }
 
         // ========================================
@@ -331,7 +651,7 @@ public class KeyboardHookManager : IDisposable
         // NumPad 2 = dół (potomek)
         // NumPad 5 = odczytaj bieżący element
         // ========================================
-        if (NumpadNavigationEnabled && IsNumLockOff() && IsNumpadKey(vkCode, flags))
+        if (NumpadNavigationEnabled && !IsNumLockOn() && IsNumpadKey(vkCode, flags))
         {
             bool handled = ProcessNumpadNavigation(vkCode);
             if (handled)
@@ -345,9 +665,26 @@ public class KeyboardHookManager : IDisposable
             return ProcessCtrlAltShortcut(vkCode);
         }
 
-        // Ctrl+strzałki (bez Alt) - nawigacja po słowach
+        // ========================================
+        // STRZAŁKI W BROWSE MODE (nie w polu edycyjnym)
+        // Blokujemy klawisze i obsługujemy nawigację w wirtualnym buforze
+        // ========================================
+        if (IsInBrowseMode && !IsInEditField && !_altPressed && !_insertPressed)
+        {
+            bool isArrowKey = vkCode == 0x25 || vkCode == 0x27 || vkCode == 0x26 || vkCode == 0x28 ||
+                              vkCode == 0x24 || vkCode == 0x23; // Left, Right, Up, Down, Home, End
+
+            if (isArrowKey && BrowseModeArrowNavigation != null)
+            {
+                bool handled = BrowseModeArrowNavigation(vkCode, _ctrlPressed);
+                if (handled)
+                    return true; // Blokuj klawisz - browse mode obsłużył
+            }
+        }
+
+        // Ctrl+strzałki (bez Alt) - nawigacja po słowach (w polach edycyjnych)
         // NIE blokujemy - pozwalamy systemowi przesunąć kursor, ale ogłaszamy słowo
-        if (_ctrlPressed && !_altPressed && !_insertPressed)
+        if (_ctrlPressed && !_altPressed && !_insertPressed && IsInEditField)
         {
             ProcessCtrlArrowNavigation(vkCode);
             // Zwracamy false - nie blokujemy, klawisz idzie do systemu
@@ -359,6 +696,16 @@ public class KeyboardHookManager : IDisposable
         {
             ProcessArrowNavigation(vkCode);
             // Zwracamy false - nie blokujemy, klawisz idzie do systemu
+        }
+
+        // Strzałki góra/dół w ComboBox - odczytaj wybrane elementy
+        // NIE blokujemy - pozwalamy systemowi zmienić wybór, ale ogłaszamy element
+        if (!_ctrlPressed && !_altPressed && !_insertPressed && IsInComboBox)
+        {
+            if (vkCode == VK_UP || vkCode == VK_DOWN)
+            {
+                ComboBoxArrowNavigation?.Invoke(vkCode);
+            }
         }
 
         // Echo klawiatury - przechwytuj wpisywane znaki (tylko w polu edycyjnym)
@@ -392,14 +739,20 @@ public class KeyboardHookManager : IDisposable
             return;
         }
 
-        // Backspace - usuń ostatni znak z bufora
+        // Backspace - usuń ostatni znak z bufora i ogłoś usunięty znak
         if (vkCode == 0x08)
         {
             if (_wordBuffer.Length > 0)
             {
                 _wordBuffer.Remove(_wordBuffer.Length - 1, 1);
             }
-            CharTyped?.Invoke('\b');
+
+            // Pobierz znak PRZED kursorem (znak który będzie usunięty)
+            char? charToDelete = CharacterBeingDeleted?.Invoke();
+            if (charToDelete.HasValue && charToDelete.Value != '\0')
+            {
+                CharacterDeleted?.Invoke(charToDelete.Value);
+            }
             return;
         }
 
@@ -507,21 +860,47 @@ public class KeyboardHookManager : IDisposable
     /// </summary>
     private bool ProcessNumpadNavigation(int vkCode)
     {
-        // W terminalu używamy nawigacji tekstowej
-        if (IsInTerminal)
+        // W trybie pokrętła:
+        // NumPad 4/6 - przełączanie kategorii
+        // NumPad 2/8 - przełączanie elementów w kategorii
+        if (IsDialEnabled)
         {
-            return ProcessTerminalNumpadNavigation(vkCode);
+            switch (vkCode)
+            {
+                case VK_LEFT:   // NumPad 4 - poprzednia kategoria
+                    DialPreviousCategory?.Invoke();
+                    return true;
+
+                case VK_RIGHT:  // NumPad 6 - następna kategoria
+                    DialNextCategory?.Invoke();
+                    return true;
+
+                case VK_UP:     // NumPad 8 - poprzedni element w kategorii
+                    DialPreviousItem?.Invoke();
+                    return true;
+
+                case VK_DOWN:   // NumPad 2 - następny element w kategorii
+                    DialNextItem?.Invoke();
+                    return true;
+            }
+            // Inne klawisze NumPad działają normalnie nawet w trybie pokrętła
         }
 
         // Standardowa nawigacja obiektowa
         switch (vkCode)
         {
-            case VK_LEFT:   // NumPad 4 - poprzedni element (rodzeństwo)
-                MoveToPreviousElement?.Invoke();
+            case VK_LEFT:   // NumPad 4 - poprzedni element
+                if (_linearNavigationMode)
+                    LinearMoveToPrevious?.Invoke();
+                else
+                    MoveToPreviousElement?.Invoke();
                 return true;
 
-            case VK_RIGHT:  // NumPad 6 - następny element (rodzeństwo)
-                MoveToNextElement?.Invoke();
+            case VK_RIGHT:  // NumPad 6 - następny element
+                if (_linearNavigationMode)
+                    LinearMoveToNext?.Invoke();
+                else
+                    MoveToNextElement?.Invoke();
                 return true;
 
             case VK_UP:     // NumPad 8 - element nadrzędny (rodzic)
@@ -535,75 +914,9 @@ public class KeyboardHookManager : IDisposable
             case VK_CLEAR:  // NumPad 5 - odczytaj bieżący element
                 ReadCurrentElement?.Invoke();
                 return true;
-
-            case VK_RETURN: // NumPad Enter - aktywuj element
-                ClickAction?.Invoke();
-                return true;
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// Przetwarza nawigację numpadem w trybie terminala
-    /// NumPad 2: następna linia, 8: poprzednia linia
-    /// NumPad 4: poprzedni znak, 6: następny znak
-    /// NumPad 1: poprzedni wyraz, 3: następny wyraz
-    /// NumPad 7: poprzednia strona, 9: następna strona
-    /// NumPad 5: odczytaj bieżącą linię
-    /// </summary>
-    private bool ProcessTerminalNumpadNavigation(int vkCode)
-    {
-        string? result = null;
-
-        switch (vkCode)
-        {
-            case VK_DOWN:   // NumPad 2 - następna linia
-                result = TerminalNextLine?.Invoke();
-                break;
-
-            case VK_UP:     // NumPad 8 - poprzednia linia
-                result = TerminalPreviousLine?.Invoke();
-                break;
-
-            case VK_LEFT:   // NumPad 4 - poprzedni znak
-                result = TerminalPreviousChar?.Invoke();
-                break;
-
-            case VK_RIGHT:  // NumPad 6 - następny znak
-                result = TerminalNextChar?.Invoke();
-                break;
-
-            case VK_END:    // NumPad 1 - poprzedni wyraz
-                result = TerminalPreviousWord?.Invoke();
-                break;
-
-            case VK_NEXT:   // NumPad 3 - następny wyraz
-                result = TerminalNextWord?.Invoke();
-                break;
-
-            case VK_HOME:   // NumPad 7 - poprzednia strona
-                result = TerminalPreviousPage?.Invoke();
-                break;
-
-            case VK_PRIOR:  // NumPad 9 - następna strona
-                result = TerminalNextPage?.Invoke();
-                break;
-
-            case VK_CLEAR:  // NumPad 5 - odczytaj bieżącą linię
-                result = TerminalReadLine?.Invoke();
-                break;
-
-            case VK_RETURN: // NumPad Enter - aktywuj element
-                ClickAction?.Invoke();
-                return true;
-
-            default:
-                return false;
-        }
-
-        // Wynik będzie obsłużony przez ScreenReaderEngine (mowa)
-        return result != null;
     }
 
     /// <summary>

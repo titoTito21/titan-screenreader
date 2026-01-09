@@ -84,6 +84,22 @@ public class OneCoreEngine : IDisposable
         }
     }
 
+    /// <summary>
+    /// Synthesizes text to stream (for spatial audio)
+    /// </summary>
+    public async Task<Stream> SynthesizeToStreamAsync(string text)
+    {
+        if (!_initialized || _synthesizer == null)
+            throw new InvalidOperationException("Engine not initialized");
+
+        if (string.IsNullOrWhiteSpace(text))
+            throw new ArgumentException("Text cannot be empty");
+
+        // Synthesize and return stream
+        var stream = await _synthesizer.SynthesizeTextToStreamAsync(text);
+        return stream.AsStream();
+    }
+
     public void Stop()
     {
         if (_mediaPlayer != null)

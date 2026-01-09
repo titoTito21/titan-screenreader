@@ -1,11 +1,21 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <LangVersion>preview</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <DisableImplicitNamespaceImports>false</DisableImplicitNamespaceImports>
+
+    <!-- Single-file publikacja -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,8 +33,9 @@
     <PackageReference Include="System.Speech" Version="8.0.0" />
   </ItemGroup>
 
+  <!-- Osadzone zasoby dźwiękowe -->
   <ItemGroup>
-    <None Include="sfx\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="SFX\*.ogg" />
   </ItemGroup>
 
 </Project>

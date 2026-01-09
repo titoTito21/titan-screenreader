@@ -287,6 +287,61 @@ public class EditableTextHandler : IDisposable
     }
 
     /// <summary>
+    /// Pobiera znak PRZED karetką (do użycia przy Backspace)
+    /// Zwraca null jeśli brak znaku lub błąd
+    /// </summary>
+    public char? GetCharacterBeforeCaret()
+    {
+        if (_element == null)
+            return null;
+
+        try
+        {
+            if (_textPattern != null)
+            {
+                var selection = _textPattern.GetSelection();
+                if (selection.Length > 0)
+                {
+                    var range = selection[0].Clone();
+                    // Przesuń początek zakresu o jeden znak wstecz
+                    int moved = range.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, -1);
+                    if (moved < 0)
+                    {
+                        // Pobierz ten znak
+                        string text = range.GetText(1);
+                        if (!string.IsNullOrEmpty(text))
+                        {
+                            return text[0];
+                        }
+                    }
+                }
+            }
+
+            // Fallback: użyj pełnego tekstu i pozycji
+            string fullText = GetFullText();
+            int pos = GetCaretPosition();
+            if (pos > 0 && pos <= fullText.Length)
+            {
+                return fullText[pos - 1];
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"EditableTextHandler: Błąd GetCharacterBeforeCaret: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Pobiera fonetyczne ogłoszenie dla znaku (publiczna wersja)
+    /// </summary>
+    public static string GetPhoneticForCharacter(char ch)
+    {
+        return GetPhoneticAnnouncement(ch.ToString());
+    }
+
+    /// <summary>
     /// Pobiera znak na pozycji karetki
     /// </summary>
     private string GetCharacterAtCaret()

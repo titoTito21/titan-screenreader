@@ -327,7 +327,10 @@ public class EditFieldNavigator
         }
     }
 
-    private string GetCharacterDescription(char c)
+    /// <summary>
+    /// Pobiera opis znaku z fonetyką polską
+    /// </summary>
+    public string GetCharacterDescription(char c)
     {
         if (PhoneticAlphabet.TryGetValue(char.ToLower(c), out var phonetic))
         {

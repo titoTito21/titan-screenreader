@@ -1,27 +1,32 @@
 using System.Windows.Automation;
-using ScreenReader.VirtualBuffers;
 
 namespace ScreenReader.BrowseMode;
 
 /// <summary>
 /// Obsługuje tryb przeglądania (browse mode) dla dokumentów webowych
-/// Port z NVDA browseMode.py
+/// Uproszczona wersja - używa bezpośredniej nawigacji TreeWalker zamiast wirtualnego bufora
+/// Działa podobnie do VoiceOver na macOS
 /// </summary>
 public class BrowseModeHandler : IDisposable
 {
-    private VirtualBuffer? _buffer;
+    private AutomationElement? _currentElement;
+    private AutomationElement? _rootDocument;
     private bool _passThrough;
-    private bool _virtualCursorEnabled = true;
     private bool _disposed;
+
+    // Nawigacja po tekście dokumentu
+    private string _documentText = "";
+    private int _charPosition;
+    private int _linePosition;
+    private string[] _lines = Array.Empty<string>();
+
+    private static readonly TreeWalker Walker = TreeWalker.ControlViewWalker;
 
     /// <summary>Event wywoływany gdy należy ogłosić element</summary>
     public event Action<string>? Announce;
 
     /// <summary>Event wywoływany przy zmianie trybu</summary>
     public event Action<bool>? ModeChanged;
-
-    /// <summary>Aktywny wirtualny bufor</summary>
-    public VirtualBuffer? Buffer => _buffer;
 
     /// <summary>Czy tryb pass-through (focus mode) jest aktywny</summary>
     public bool PassThrough
@@ -32,77 +37,101 @@ public class BrowseModeHandler : IDisposable
             if (_passThrough != value)
             {
                 _passThrough = value;
-                if (_buffer != null)
-                    _buffer.PassThrough = value;
                 ModeChanged?.Invoke(value);
             }
         }
     }
 
-    /// <summary>Czy browse mode jest aktywny</summary>
-    public bool IsActive => _buffer != null && !_buffer.IsLoading;
+    /// <summary>Czy browse mode jest aktywny (zawsze true gdy w przeglądarce)</summary>
+    public bool IsActive => _rootDocument != null;
 
-    /// <summary>Czy wirtualny kursor (TCE) jest włączony</summary>
-    public bool IsVirtualCursorEnabled
-    {
-        get => _virtualCursorEnabled;
-        private set => _virtualCursorEnabled = value;
-    }
+    /// <summary>Bieżący nawigowany element</summary>
+    public AutomationElement? CurrentElement => _currentElement;
 
     /// <summary>
-    /// Przełącza wirtualny kursor (TCE) i zwraca komunikat
-    /// </summary>
-    /// <returns>"Kursor TCE tak" lub "Kursor TCE nie"</returns>
-    public string ToggleVirtualCursor()
-    {
-        IsVirtualCursorEnabled = !IsVirtualCursorEnabled;
-        return IsVirtualCursorEnabled ? "Kursor TCE tak" : "Kursor TCE nie";
-    }
-
-    /// <summary>
-    /// Aktywuje browse mode dla dokumentu
-    /// </summary>
-    public async Task ActivateAsync(AutomationElement document)
-    {
-        _buffer?.Dispose();
-        _buffer = new VirtualBuffer();
-        _passThrough = false;
-
-        Announce?.Invoke("Ładowanie dokumentu...");
-
-        await _buffer.LoadDocumentAsync(document);
-
-        if (_buffer.Length > 0)
-        {
-            var firstNode = _buffer.GetNodeAtOffset(0);
-            if (firstNode != null)
-            {
-                AnnounceNode(firstNode);
-            }
-        }
-
-        Announce?.Invoke($"Dokument załadowany, {_buffer.NodeCount} elementów");
-    }
-
-    /// <summary>
-    /// Aktywuje browse mode synchronicznie
+    /// Aktywuje browse mode dla dokumentu (synchronicznie)
     /// </summary>
     public void Activate(AutomationElement document)
     {
-        _buffer?.Dispose();
-        _buffer = new VirtualBuffer();
+        _rootDocument = document;
+        _currentElement = document;
         _passThrough = false;
 
-        _buffer.LoadDocument(document);
-
-        if (_buffer.Length > 0)
+        // Znajdź pierwszy interaktywny element
+        var firstChild = Walker.GetFirstChild(document);
+        if (firstChild != null)
         {
-            var firstNode = _buffer.GetNodeAtOffset(0);
-            if (firstNode != null)
+            _currentElement = firstChild;
+        }
+
+        // Zbuduj tekst dokumentu dla nawigacji po liniach i znakach
+        BuildDocumentText();
+
+        Announce?.Invoke("Tryb przeglądania");
+    }
+
+    /// <summary>
+    /// Buduje tekstową reprezentację dokumentu dla nawigacji
+    /// </summary>
+    private void BuildDocumentText()
+    {
+        var sb = new System.Text.StringBuilder();
+        BuildTextFromElement(_rootDocument, sb);
+        _documentText = sb.ToString();
+        _lines = _documentText.Split(new[] { '\n' }, StringSplitOptions.None);
+        _charPosition = 0;
+        _linePosition = 0;
+    }
+
+    /// <summary>
+    /// Rekurencyjnie pobiera tekst z elementów
+    /// </summary>
+    private void BuildTextFromElement(AutomationElement? element, System.Text.StringBuilder sb)
+    {
+        if (element == null)
+            return;
+
+        try
+        {
+            var name = element.Current.Name;
+            var controlType = element.Current.ControlType;
+
+            // Dodaj tekst elementu
+            if (!string.IsNullOrWhiteSpace(name))
             {
-                AnnounceNode(firstNode);
+                sb.Append(name);
+
+                // Nagłówki i paragrafy kończą się nową linią
+                if (controlType == ControlType.Text ||
+                    element.Current.LocalizedControlType?.ToLower().Contains("heading") == true ||
+                    element.Current.LocalizedControlType?.ToLower().Contains("nagłówek") == true)
+                {
+                    sb.AppendLine();
+                }
+                else
+                {
+                    sb.Append(' ');
+                }
+            }
+
+            // Przejdź przez dzieci
+            var child = Walker.GetFirstChild(element);
+            while (child != null)
+            {
+                BuildTextFromElement(child, sb);
+                child = Walker.GetNextSibling(child);
             }
         }
+        catch { }
+    }
+
+    /// <summary>
+    /// Aktywuje browse mode dla dokumentu (asynchronicznie - dla kompatybilności)
+    /// </summary>
+    public Task ActivateAsync(AutomationElement document)
+    {
+        Activate(document);
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -110,8 +139,8 @@ public class BrowseModeHandler : IDisposable
     /// </summary>
     public void Deactivate()
     {
-        _buffer?.Dispose();
-        _buffer = null;
+        _rootDocument = null;
+        _currentElement = null;
         _passThrough = false;
     }
 
@@ -127,6 +156,14 @@ public class BrowseModeHandler : IDisposable
     }
 
     /// <summary>
+    /// Ustawia bieżący element (wywoływane przy zmianie fokusu)
+    /// </summary>
+    public void SetCurrentElement(AutomationElement element)
+    {
+        _currentElement = element;
+    }
+
+    /// <summary>
     /// Obsługuje szybką nawigację jednoliterową
     /// </summary>
     /// <param name="key">Klawisz nawigacji</param>
@@ -134,19 +171,19 @@ public class BrowseModeHandler : IDisposable
     /// <returns>True jeśli nawigacja została obsłużona</returns>
     public bool HandleQuickNav(char key, bool shift)
     {
-        if (_buffer == null || PassThrough || !_virtualCursorEnabled)
+        if (!IsActive || PassThrough)
             return false;
 
         var type = QuickNavKeys.GetTypeForKey(key);
         if (type == QuickNavType.None)
             return false;
 
-        VirtualBufferNode? node;
+        AutomationElement? found;
 
         if (shift)
         {
-            node = _buffer.FindPreviousByType(type, _buffer.CaretOffset);
-            if (node == null)
+            found = FindPreviousByType(type);
+            if (found == null)
             {
                 Announce?.Invoke($"Brak poprzedniego elementu typu {QuickNavKeys.GetTypeName(type)}");
                 return true;
@@ -154,195 +191,701 @@ public class BrowseModeHandler : IDisposable
         }
         else
         {
-            node = _buffer.FindNextByType(type, _buffer.CaretOffset);
-            if (node == null)
+            found = FindNextByType(type);
+            if (found == null)
             {
                 Announce?.Invoke($"Brak następnego elementu typu {QuickNavKeys.GetTypeName(type)}");
                 return true;
             }
         }
 
-        MoveTo(node);
-        AnnounceNode(node);
+        _currentElement = found;
+        try
+        {
+            found.SetFocus();
+        }
+        catch { }
+
+        AnnounceElement(found, type);
         return true;
     }
 
     /// <summary>
-    /// Przesuwa do węzła
+    /// Znajduje następny element danego typu
     /// </summary>
-    private void MoveTo(VirtualBufferNode node)
+    private AutomationElement? FindNextByType(QuickNavType type)
     {
-        if (_buffer == null)
-            return;
+        if (_currentElement == null)
+            return null;
 
-        _buffer.MoveToNode(node);
+        var current = _currentElement;
+        var visited = new HashSet<int>();
+
+        while (true)
+        {
+            current = GetNextElement(current);
+            if (current == null)
+                break;
+
+            // Zabezpieczenie przed nieskończoną pętlą
+            int hash = current.GetHashCode();
+            if (visited.Contains(hash))
+                break;
+            visited.Add(hash);
+
+            if (visited.Count > 5000)
+                break;
+
+            if (MatchesType(current, type))
+                return current;
+        }
+
+        return null;
     }
 
     /// <summary>
-    /// Ogłasza węzeł
+    /// Znajduje poprzedni element danego typu
     /// </summary>
-    private void AnnounceNode(VirtualBufferNode node)
+    private AutomationElement? FindPreviousByType(QuickNavType type)
     {
-        string announcement = node.GetAnnouncement();
-        Announce?.Invoke(announcement);
+        if (_currentElement == null)
+            return null;
+
+        var current = _currentElement;
+        var visited = new HashSet<int>();
+
+        while (true)
+        {
+            current = GetPreviousElement(current);
+            if (current == null)
+                break;
+
+            int hash = current.GetHashCode();
+            if (visited.Contains(hash))
+                break;
+            visited.Add(hash);
+
+            if (visited.Count > 5000)
+                break;
+
+            if (MatchesType(current, type))
+                return current;
+        }
+
+        return null;
     }
 
     /// <summary>
-    /// Przesuwa do następnej linii
+    /// Pobiera następny element w kolejności dokumentu (depth-first)
     /// </summary>
-    public void MoveToNextLine()
+    private AutomationElement? GetNextElement(AutomationElement element)
     {
-        if (_buffer == null || PassThrough)
-            return;
+        try
+        {
+            // Najpierw sprawdź dzieci
+            var child = Walker.GetFirstChild(element);
+            if (child != null)
+                return child;
 
-        var (_, end, _) = _buffer.GetCurrentLine();
-        if (end < _buffer.Length)
-        {
-            _buffer.CaretOffset = end + 1;
-            ReadCurrentLine();
+            // Następnie rodzeństwo
+            var sibling = Walker.GetNextSibling(element);
+            if (sibling != null)
+                return sibling;
+
+            // Wróć do rodzica i szukaj jego rodzeństwa
+            var parent = Walker.GetParent(element);
+            while (parent != null)
+            {
+                if (_rootDocument != null && Automation.Compare(parent, _rootDocument))
+                    return null; // Dotarliśmy do korzenia
+
+                sibling = Walker.GetNextSibling(parent);
+                if (sibling != null)
+                    return sibling;
+
+                parent = Walker.GetParent(parent);
+            }
         }
-        else
+        catch { }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Pobiera poprzedni element w kolejności dokumentu
+    /// </summary>
+    private AutomationElement? GetPreviousElement(AutomationElement element)
+    {
+        try
         {
-            Announce?.Invoke("Koniec dokumentu");
+            // Sprawdź poprzednie rodzeństwo
+            var sibling = Walker.GetPreviousSibling(element);
+            if (sibling != null)
+            {
+                // Idź do ostatniego potomka tego rodzeństwa
+                return GetLastDescendant(sibling) ?? sibling;
+            }
+
+            // Wróć do rodzica
+            var parent = Walker.GetParent(element);
+            if (parent != null && _rootDocument != null && !Automation.Compare(parent, _rootDocument))
+            {
+                return parent;
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Pobiera ostatniego potomka elementu
+    /// </summary>
+    private AutomationElement? GetLastDescendant(AutomationElement element)
+    {
+        try
+        {
+            var last = Walker.GetLastChild(element);
+            if (last == null)
+                return null;
+
+            // Rekurencyjnie szukaj ostatniego potomka
+            var deeper = GetLastDescendant(last);
+            return deeper ?? last;
+        }
+        catch
+        {
+            return null;
         }
     }
 
     /// <summary>
-    /// Przesuwa do poprzedniej linii
+    /// Sprawdza czy element pasuje do typu szybkiej nawigacji
     /// </summary>
-    public void MoveToPreviousLine()
+    private static bool MatchesType(AutomationElement element, QuickNavType type)
     {
-        if (_buffer == null || PassThrough)
-            return;
+        try
+        {
+            var controlType = element.Current.ControlType;
+            var className = element.Current.ClassName ?? "";
+            var ariaRole = GetAriaRole(element);
 
-        var (start, _, _) = _buffer.GetCurrentLine();
-        if (start > 0)
-        {
-            _buffer.CaretOffset = start - 1;
-            var (newStart, _, _) = _buffer.GetCurrentLine();
-            _buffer.CaretOffset = newStart;
-            ReadCurrentLine();
+            return type switch
+            {
+                QuickNavType.Heading or QuickNavType.Heading1 or QuickNavType.Heading2 or
+                QuickNavType.Heading3 or QuickNavType.Heading4 or QuickNavType.Heading5 or
+                QuickNavType.Heading6 => IsHeading(element, type),
+
+                QuickNavType.Link or QuickNavType.UnvisitedLink or QuickNavType.VisitedLink =>
+                    controlType == ControlType.Hyperlink || ariaRole == "link",
+
+                QuickNavType.Button =>
+                    controlType == ControlType.Button || ariaRole == "button",
+
+                QuickNavType.EditField =>
+                    controlType == ControlType.Edit || controlType == ControlType.Document ||
+                    ariaRole == "textbox" || ariaRole == "searchbox",
+
+                QuickNavType.ComboBox =>
+                    controlType == ControlType.ComboBox || ariaRole == "combobox" || ariaRole == "listbox",
+
+                QuickNavType.Checkbox =>
+                    controlType == ControlType.CheckBox || ariaRole == "checkbox",
+
+                QuickNavType.RadioButton =>
+                    controlType == ControlType.RadioButton || ariaRole == "radio",
+
+                QuickNavType.List =>
+                    controlType == ControlType.List || ariaRole == "list",
+
+                QuickNavType.ListItem =>
+                    controlType == ControlType.ListItem || ariaRole == "listitem",
+
+                QuickNavType.Table =>
+                    controlType == ControlType.Table || controlType == ControlType.DataGrid ||
+                    ariaRole == "table" || ariaRole == "grid",
+
+                QuickNavType.Graphic =>
+                    controlType == ControlType.Image || ariaRole == "img" || ariaRole == "image",
+
+                QuickNavType.Landmark =>
+                    ariaRole == "navigation" || ariaRole == "main" || ariaRole == "banner" ||
+                    ariaRole == "contentinfo" || ariaRole == "complementary" || ariaRole == "search" ||
+                    ariaRole == "region" || ariaRole == "form",
+
+                QuickNavType.FormField =>
+                    controlType == ControlType.Edit || controlType == ControlType.ComboBox ||
+                    controlType == ControlType.CheckBox || controlType == ControlType.RadioButton ||
+                    controlType == ControlType.Button,
+
+                QuickNavType.BlockQuote =>
+                    ariaRole == "blockquote",
+
+                QuickNavType.Separator =>
+                    controlType == ControlType.Separator || ariaRole == "separator",
+
+                QuickNavType.Paragraph =>
+                    ariaRole == "paragraph" || (controlType == ControlType.Text && !string.IsNullOrEmpty(element.Current.Name)),
+
+                QuickNavType.Frame =>
+                    ariaRole == "document" || className.Contains("frame", StringComparison.OrdinalIgnoreCase),
+
+                _ => false
+            };
         }
-        else
+        catch
         {
-            Announce?.Invoke("Początek dokumentu");
+            return false;
         }
     }
 
     /// <summary>
-    /// Czyta bieżącą linię
+    /// Sprawdza czy element to nagłówek określonego poziomu
     /// </summary>
-    public void ReadCurrentLine()
+    private static bool IsHeading(AutomationElement element, QuickNavType type)
     {
-        if (_buffer == null)
-            return;
+        try
+        {
+            var ariaRole = GetAriaRole(element);
+            var ariaLevel = GetAriaLevel(element);
+            var controlType = element.Current.ControlType;
 
-        var (_, _, text) = _buffer.GetCurrentLine();
-        if (!string.IsNullOrWhiteSpace(text))
-        {
-            Announce?.Invoke(text);
+            // Sprawdź po roli ARIA
+            if (ariaRole == "heading")
+            {
+                if (type == QuickNavType.Heading)
+                    return true;
+
+                int expectedLevel = type switch
+                {
+                    QuickNavType.Heading1 => 1,
+                    QuickNavType.Heading2 => 2,
+                    QuickNavType.Heading3 => 3,
+                    QuickNavType.Heading4 => 4,
+                    QuickNavType.Heading5 => 5,
+                    QuickNavType.Heading6 => 6,
+                    _ => 0
+                };
+
+                return expectedLevel == 0 || ariaLevel == expectedLevel;
+            }
+
+            // Sprawdź po ControlType (dla niektórych przeglądarek)
+            if (controlType.ProgrammaticName.Contains("Heading", StringComparison.OrdinalIgnoreCase))
+            {
+                return type == QuickNavType.Heading || ariaLevel > 0;
+            }
+
+            return false;
         }
-        else
+        catch
         {
-            Announce?.Invoke("pusta linia");
+            return false;
         }
     }
 
     /// <summary>
-    /// Czyta bieżący element
+    /// Pobiera rolę ARIA z elementu
     /// </summary>
-    public void ReadCurrentElement()
+    private static string GetAriaRole(AutomationElement element)
     {
-        if (_buffer == null)
-            return;
-
-        var node = _buffer.GetNodeAtOffset(_buffer.CaretOffset);
-        if (node != null)
+        try
         {
-            AnnounceNode(node);
+            // Sprawdź LocalizedControlType dla przeglądarek (najbardziej wiarygodne źródło)
+            var localizedType = element.Current.LocalizedControlType?.ToLowerInvariant() ?? "";
+
+            if (localizedType.Contains("heading") || localizedType.Contains("nagłówek"))
+                return "heading";
+            if (localizedType.Contains("link") || localizedType.Contains("łącze"))
+                return "link";
+            if (localizedType.Contains("button") || localizedType.Contains("przycisk"))
+                return "button";
+            if (localizedType.Contains("edit") || localizedType.Contains("pole edycji") ||
+                localizedType.Contains("text") || localizedType.Contains("tekstowe"))
+                return "textbox";
+            if (localizedType.Contains("combo") || localizedType.Contains("kombi"))
+                return "combobox";
+            if (localizedType.Contains("check") || localizedType.Contains("wyboru"))
+                return "checkbox";
+            if (localizedType.Contains("radio") || localizedType.Contains("opcji"))
+                return "radio";
+            if (localizedType.Contains("list item") || localizedType.Contains("element listy"))
+                return "listitem";
+            if (localizedType.Contains("list") || localizedType.Contains("lista"))
+                return "list";
+            if (localizedType.Contains("table") || localizedType.Contains("tabela"))
+                return "table";
+            if (localizedType.Contains("image") || localizedType.Contains("obraz") || localizedType.Contains("grafika"))
+                return "img";
+            if (localizedType.Contains("separator"))
+                return "separator";
+            if (localizedType.Contains("navigation") || localizedType.Contains("nawigacja"))
+                return "navigation";
+            if (localizedType.Contains("main") || localizedType.Contains("główna"))
+                return "main";
+            if (localizedType.Contains("banner"))
+                return "banner";
+            if (localizedType.Contains("search") || localizedType.Contains("szukaj") || localizedType.Contains("wyszukiwanie"))
+                return "search";
+            if (localizedType.Contains("region"))
+                return "region";
+            if (localizedType.Contains("form") || localizedType.Contains("formularz"))
+                return "form";
+
+            // Sprawdź ItemStatus który czasem zawiera rolę ARIA
+            var itemStatus = element.Current.ItemStatus ?? "";
+            if (!string.IsNullOrEmpty(itemStatus))
+            {
+                return itemStatus.ToLowerInvariant();
+            }
+
+            // Sprawdź ClassName dla przeglądarek Chromium
+            var className = element.Current.ClassName ?? "";
+            if (className.Contains("heading", StringComparison.OrdinalIgnoreCase))
+                return "heading";
+        }
+        catch { }
+
+        return "";
+    }
+
+    /// <summary>
+    /// Pobiera poziom ARIA z elementu
+    /// </summary>
+    private static int GetAriaLevel(AutomationElement element)
+    {
+        try
+        {
+            // Próbuj pobrać poziom z różnych źródeł
+            var name = element.Current.Name ?? "";
+            var localizedType = element.Current.LocalizedControlType ?? "";
+
+            // Sprawdź czy w nazwie typu jest poziom (np. "heading level 2")
+            for (int i = 1; i <= 6; i++)
+            {
+                if (localizedType.Contains($"{i}") || localizedType.Contains($"level {i}"))
+                    return i;
+            }
+
+            // Sprawdź AutomationId
+            var automationId = element.Current.AutomationId ?? "";
+            if (automationId.StartsWith("H") && automationId.Length == 2 &&
+                char.IsDigit(automationId[1]))
+            {
+                return automationId[1] - '0';
+            }
+        }
+        catch { }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Ogłasza element
+    /// </summary>
+    private void AnnounceElement(AutomationElement element, QuickNavType foundType)
+    {
+        try
+        {
+            var name = element.Current.Name ?? "";
+            var typeName = QuickNavKeys.GetTypeName(foundType);
+
+            // Dla nagłówków dodaj poziom
+            if (QuickNavKeys.IsHeading(foundType))
+            {
+                int level = GetAriaLevel(element);
+                if (level > 0)
+                {
+                    typeName = $"nagłówek poziom {level}";
+                }
+            }
+
+            string announcement = string.IsNullOrEmpty(name)
+                ? typeName
+                : $"{name}, {typeName}";
+
+            Announce?.Invoke(announcement);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"BrowseModeHandler: Błąd ogłaszania: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// Aktywuje bieżący element (Enter/Space)
+    /// Obsługuje nawigację strzałkami w browse mode
+    /// Góra/Dół = poprzednia/następna linia
+    /// Lewo/Prawo = poprzedni/następny znak
     /// </summary>
-    public bool ActivateCurrentElement()
+    public bool HandleArrowNavigation(int vkCode, bool ctrl)
     {
-        if (_buffer == null)
+        if (!IsActive || PassThrough)
             return false;
 
-        var node = _buffer.GetNodeAtOffset(_buffer.CaretOffset);
-        if (node?.Element == null)
-            return false;
+        const int VK_LEFT = 0x25;
+        const int VK_UP = 0x26;
+        const int VK_RIGHT = 0x27;
+        const int VK_DOWN = 0x28;
 
-        // Dla interaktywnych elementów, przełącz na focus mode
-        if (node.IsInteractive)
+        switch (vkCode)
         {
-            try
-            {
-                // Spróbuj kliknąć lub ustawić fokus
-                if (node.Element.TryGetCurrentPattern(InvokePattern.Pattern, out var invokePattern))
-                {
-                    ((InvokePattern)invokePattern).Invoke();
-                    return true;
-                }
+            case VK_UP: // Poprzednia linia
+                return MoveToPreviousLine();
 
-                // Dla pól edycyjnych przełącz na focus mode
-                if (node.Role == QuickNavType.EditField)
-                {
-                    PassThrough = true;
-                    node.Element.SetFocus();
-                    return true;
-                }
+            case VK_DOWN: // Następna linia
+                return MoveToNextLine();
 
-                // Spróbuj ustawić fokus
-                node.Element.SetFocus();
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"BrowseModeHandler: Błąd aktywacji: {ex.Message}");
-            }
+            case VK_LEFT: // Poprzedni znak
+                return MoveToPreviousChar();
+
+            case VK_RIGHT: // Następny znak
+                return MoveToNextChar();
         }
 
         return false;
     }
 
     /// <summary>
-    /// Przesuwa do początku dokumentu
+    /// Przechodzi do poprzedniej linii i ją odczytuje
     /// </summary>
-    public void MoveToStart()
+    private bool MoveToPreviousLine()
     {
-        if (_buffer == null || PassThrough)
-            return;
+        if (_lines.Length == 0)
+            return true;
 
-        _buffer.CaretOffset = 0;
-        ReadCurrentLine();
-        Announce?.Invoke("Początek dokumentu");
+        if (_linePosition > 0)
+        {
+            _linePosition--;
+            _charPosition = 0;
+            ReadCurrentLine();
+        }
+        else
+        {
+            Announce?.Invoke("Początek dokumentu");
+        }
+        return true;
     }
 
     /// <summary>
-    /// Przesuwa do końca dokumentu
+    /// Przechodzi do następnej linii i ją odczytuje
     /// </summary>
-    public void MoveToEnd()
+    private bool MoveToNextLine()
     {
-        if (_buffer == null || PassThrough)
-            return;
+        if (_lines.Length == 0)
+            return true;
 
-        _buffer.CaretOffset = _buffer.Length;
-        ReadCurrentLine();
-        Announce?.Invoke("Koniec dokumentu");
+        if (_linePosition < _lines.Length - 1)
+        {
+            _linePosition++;
+            _charPosition = 0;
+            ReadCurrentLine();
+        }
+        else
+        {
+            Announce?.Invoke("Koniec dokumentu");
+        }
+        return true;
     }
 
     /// <summary>
-    /// Czyta cały dokument
+    /// Przechodzi do poprzedniego znaku i go odczytuje
     /// </summary>
-    public void SayAll()
+    private bool MoveToPreviousChar()
     {
-        if (_buffer == null)
-            return;
+        if (_lines.Length == 0)
+            return true;
 
-        Announce?.Invoke(_buffer.Text);
+        string currentLine = _lines[_linePosition];
+
+        if (_charPosition > 0)
+        {
+            _charPosition--;
+            ReadCurrentChar();
+        }
+        else if (_linePosition > 0)
+        {
+            // Przejdź do końca poprzedniej linii
+            _linePosition--;
+            currentLine = _lines[_linePosition];
+            _charPosition = Math.Max(0, currentLine.Length - 1);
+            ReadCurrentChar();
+        }
+        else
+        {
+            Announce?.Invoke("Początek dokumentu");
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Przechodzi do następnego znaku i go odczytuje
+    /// </summary>
+    private bool MoveToNextChar()
+    {
+        if (_lines.Length == 0)
+            return true;
+
+        string currentLine = _lines[_linePosition];
+
+        if (_charPosition < currentLine.Length - 1)
+        {
+            _charPosition++;
+            ReadCurrentChar();
+        }
+        else if (_linePosition < _lines.Length - 1)
+        {
+            // Przejdź do początku następnej linii
+            _linePosition++;
+            _charPosition = 0;
+            ReadCurrentChar();
+        }
+        else
+        {
+            Announce?.Invoke("Koniec dokumentu");
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Odczytuje bieżącą linię
+    /// </summary>
+    private void ReadCurrentLine()
+    {
+        if (_linePosition >= 0 && _linePosition < _lines.Length)
+        {
+            string line = _lines[_linePosition];
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                Announce?.Invoke("Pusta linia");
+            }
+            else
+            {
+                Announce?.Invoke(line);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Odczytuje bieżący znak
+    /// </summary>
+    private void ReadCurrentChar()
+    {
+        if (_linePosition >= 0 && _linePosition < _lines.Length)
+        {
+            string line = _lines[_linePosition];
+            if (_charPosition >= 0 && _charPosition < line.Length)
+            {
+                char c = line[_charPosition];
+                string charName = GetCharacterName(c);
+                Announce?.Invoke(charName);
+            }
+            else if (line.Length == 0)
+            {
+                Announce?.Invoke("Pusta linia");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Zwraca nazwę znaku do ogłoszenia
+    /// </summary>
+    private static string GetCharacterName(char c)
+    {
+        return c switch
+        {
+            ' ' => "spacja",
+            '\t' => "tabulator",
+            '\r' => "powrót karetki",
+            '\n' => "nowa linia",
+            '.' => "kropka",
+            ',' => "przecinek",
+            ';' => "średnik",
+            ':' => "dwukropek",
+            '!' => "wykrzyknik",
+            '?' => "pytajnik",
+            '-' => "minus",
+            '_' => "podkreślenie",
+            '=' => "równa się",
+            '+' => "plus",
+            '*' => "gwiazdka",
+            '/' => "ukośnik",
+            '\\' => "odwrotny ukośnik",
+            '@' => "małpa",
+            '#' => "hash",
+            '$' => "dolar",
+            '%' => "procent",
+            '^' => "daszek",
+            '&' => "ampersand",
+            '(' => "nawias otwierający",
+            ')' => "nawias zamykający",
+            '[' => "nawias kwadratowy otwierający",
+            ']' => "nawias kwadratowy zamykający",
+            '{' => "nawias klamrowy otwierający",
+            '}' => "nawias klamrowy zamykający",
+            '<' => "mniejszy niż",
+            '>' => "większy niż",
+            '\'' => "apostrof",
+            '"' => "cudzysłów",
+            '`' => "grawis",
+            '~' => "tylda",
+            '|' => "kreska pionowa",
+            >= 'A' and <= 'Z' => $"duże {c}",
+            _ => c.ToString()
+        };
+    }
+
+    /// <summary>
+    /// Aktywuje bieżący element (Enter/Space/NumPad /)
+    /// </summary>
+    public bool ActivateCurrentElement()
+    {
+        if (_currentElement == null)
+            return false;
+
+        try
+        {
+            // Spróbuj kliknąć
+            if (_currentElement.TryGetCurrentPattern(InvokePattern.Pattern, out var invokePattern))
+            {
+                ((InvokePattern)invokePattern).Invoke();
+                return true;
+            }
+
+            // Dla pól edycyjnych ustaw fokus i włącz tryb formularza
+            var controlType = _currentElement.Current.ControlType;
+            if (controlType == ControlType.Edit || controlType == ControlType.ComboBox)
+            {
+                PassThrough = true;
+                _currentElement.SetFocus();
+                Announce?.Invoke("Tryb formularza");
+                return true;
+            }
+
+            // Spróbuj ustawić fokus
+            _currentElement.SetFocus();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"BrowseModeHandler: Błąd aktywacji: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Dla kompatybilności - nie używamy wirtualnego bufora
+    /// </summary>
+    public object? Buffer => null;
+
+    /// <summary>
+    /// Przełącza wirtualny kursor (TCE) - dla kompatybilności
+    /// </summary>
+    public string ToggleVirtualCursor()
+    {
+        // Przełączamy pass-through zamiast wirtualnego kursora
+        TogglePassThrough();
+        return PassThrough ? "Tryb formularza" : "Tryb przeglądania";
     }
 
     public void Dispose()
@@ -350,7 +893,8 @@ public class BrowseModeHandler : IDisposable
         if (_disposed)
             return;
 
-        _buffer?.Dispose();
+        _rootDocument = null;
+        _currentElement = null;
         _disposed = true;
     }
 }

@@ -10,11 +10,18 @@ public class UIAutomationProvider : IAccessibilityProvider
 {
     private bool _isActive;
     private bool _disposed;
-    private AutomationFocusChangedEventHandler? _focusHandler;
+    private bool _isListening;
+    private readonly AutomationFocusChangedEventHandler _focusHandler;
 
     public AccessibilityAPI ApiType => AccessibilityAPI.UIAutomation;
     public bool IsActive => _isActive;
     public bool IsAvailable => true; // UI Automation jest zawsze dostępne w Windows
+
+    public UIAutomationProvider()
+    {
+        // Tworzymy handler w konstruktorze, żeby uniknąć problemów z GC i podwójnym dodawaniem
+        _focusHandler = OnFocusChangedEvent;
+    }
 
     public event EventHandler<AccessibleObject>? FocusChanged;
     public event EventHandler<AccessiblePropertyChangedEventArgs>? PropertyChanged;
@@ -22,6 +29,10 @@ public class UIAutomationProvider : IAccessibilityProvider
 
     public bool Initialize()
     {
+        // Zabezpieczenie przed podwójnym wywołaniem
+        if (_isActive)
+            return true;
+
         try
         {
             // Sprawdź czy możemy pobrać root element
@@ -125,10 +136,14 @@ public class UIAutomationProvider : IAccessibilityProvider
 
     public void StartEventListening()
     {
+        // Zabezpieczenie przed podwójnym wywołaniem
+        if (_isListening)
+            return;
+
         try
         {
-            _focusHandler = new AutomationFocusChangedEventHandler(OnFocusChangedEvent);
             Automation.AddAutomationFocusChangedEventHandler(_focusHandler);
+            _isListening = true;
             Console.WriteLine("UIAutomationProvider: Rozpoczęto nasłuchiwanie zdarzeń");
         }
         catch (Exception ex)
@@ -139,13 +154,13 @@ public class UIAutomationProvider : IAccessibilityProvider
 
     public void StopEventListening()
     {
+        if (!_isListening)
+            return;
+
         try
         {
-            if (_focusHandler != null)
-            {
-                Automation.RemoveAutomationFocusChangedEventHandler(_focusHandler);
-                _focusHandler = null;
-            }
+            Automation.RemoveAutomationFocusChangedEventHandler(_focusHandler);
+            _isListening = false;
         }
         catch (Exception ex)
         {
