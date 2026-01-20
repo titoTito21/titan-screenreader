@@ -54,16 +54,20 @@ public class ScreenReaderEngine : IDisposable
     private readonly HintManager _hintManager;
     private readonly ImportantPlacesManager _importantPlacesManager;
     private readonly VirtualScreenManager _virtualScreenManager;
+    private readonly Menu.MenuShortcutAnnouncer _menuShortcutAnnouncer;
+    private readonly AppModules.AppModuleManager _appModuleManager;
 
     private DialogMonitor? _dialogMonitor;
     private AutomationElement? _currentElement;
     private AutomationElement? _lastWindow;
     private AutomationElement? _currentWindow; // Bieżące okno dla ograniczonej nawigacji
     private AutomationElement? _currentListParent; // Śledzenie kontekstu listy
+    private AutomationElement? _currentGroupParent; // Śledzenie kontekstu grupy
     private AutomationElement? _lastMenuParent; // Śledzenie kontekstu menu
     private AutomationElement? _lastMenuBar; // Pasek menu dla bieżącego menu
     private bool _isInMenu; // Czy aktualnie jesteśmy w menu
     private bool _isInMenuBar; // Czy aktualnie jesteśmy w pasku menu
+    private int _hierarchyLevel; // Bieżący poziom hierarchii dla nawigacji obiektowej
     private bool _disposed;
     private System.Threading.Timer? _hookHealthTimer; // Timer dla sprawdzania stanu hooka
 
@@ -75,10 +79,16 @@ public class ScreenReaderEngine : IDisposable
     private bool _isInTCEProcess; // Czy jesteśmy w procesie TCE/Titan
 
     // Echo klawiatury
-    private KeyboardEchoMode _keyboardEchoMode = KeyboardEchoMode.Characters;
+    private KeyboardEchoMode _keyboardEchoMode;
 
     // Menu kontekstowe
     private ScreenReaderContextMenu? _contextMenu;
+
+    // Tray icon
+    private System.Windows.Forms.NotifyIcon? _trayIcon;
+
+    // NVDA Controller Bridge
+    private NVDAControllerBridge? _nvdaBridge;
 
     // Nazwy procesów przeglądarek
     private static readonly HashSet<string> BrowserProcessNames = new(StringComparer.OrdinalIgnoreCase)
@@ -118,6 +128,8 @@ public class ScreenReaderEngine : IDisposable
         _hintManager = new HintManager(_speechManager);
         _importantPlacesManager = new ImportantPlacesManager(_speechManager, _soundManager);
         _virtualScreenManager = new VirtualScreenManager(_speechManager, _soundManager, _dialManager);
+        _menuShortcutAnnouncer = new Menu.MenuShortcutAnnouncer();
+        _appModuleManager = new AppModules.AppModuleManager(_speechManager);
 
         // Podłącz eventy wirtualnego ekranu
         _virtualScreenManager.EnabledChanged += OnVirtualScreenEnabledChanged;
@@ -208,8 +220,38 @@ public class ScreenReaderEngine : IDisposable
         _keyboardHook.NumLockToggled += OnNumLockToggled;
         _keyboardHook.ScrollLockToggled += OnScrollLockToggled;
 
+        // Connect application shortcut event (Ctrl+O, Alt+F, etc.)
+        _keyboardHook.ApplicationShortcutPressed += OnApplicationShortcutPressed;
+
         // Register additional gestures
         RegisterCustomGestures();
+
+        // Initialize tray icon
+        InitializeTrayIcon();
+
+        // Initialize NVDA Controller Bridge (kompatybilność z grami/aplikacjami wspierającymi NVDA)
+        _nvdaBridge = new NVDAControllerBridge(_speechManager);
+
+        // Załaduj ustawienia echa klawiatury
+        LoadKeyboardEchoSettings();
+    }
+
+    /// <summary>
+    /// Ładuje ustawienia echa klawiatury z konfiguracji
+    /// </summary>
+    private void LoadKeyboardEchoSettings()
+    {
+        var setting = _settings.KeyboardEcho;
+        _keyboardEchoMode = setting switch
+        {
+            Settings.KeyboardEchoSetting.None => KeyboardEchoMode.None,
+            Settings.KeyboardEchoSetting.Characters => KeyboardEchoMode.Characters,
+            Settings.KeyboardEchoSetting.Words => KeyboardEchoMode.Words,
+            Settings.KeyboardEchoSetting.CharactersAndWords => KeyboardEchoMode.WordsAndChars,
+            _ => KeyboardEchoMode.Characters
+        };
+
+        Console.WriteLine($"Echo klawiatury: {_keyboardEchoMode.GetPolishName()}");
     }
 
     /// <summary>
@@ -282,6 +324,85 @@ public class ScreenReaderEngine : IDisposable
             else
                 _speechManager.Speak("Wyłączono ScrollLock");
         }
+    }
+
+    /// <summary>
+    /// Obsługa skrótów aplikacji (Ctrl+O, Alt+F, etc.)
+    /// Oznajmia nazwę komendy z menu jeśli znaleziona
+    /// </summary>
+    private bool OnApplicationShortcutPressed(System.Windows.Forms.Keys key, bool ctrl, bool alt, bool shift)
+    {
+        try
+        {
+            // Pobierz aktywne okno
+            var foregroundWindow = AutomationElement.FromHandle(GetForegroundWindow());
+            if (foregroundWindow == null)
+                return false;
+
+            // Zbuduj string skrótu
+            string shortcut = Menu.MenuShortcutAnnouncer.KeysToShortcutString(key, ctrl, alt, shift);
+            Console.WriteLine($"ApplicationShortcut: {shortcut}");
+
+            // Sprawdź czy istnieje komenda menu dla tego skrótu
+            string? commandName = _menuShortcutAnnouncer.GetMenuCommandName(foregroundWindow, shortcut);
+
+            if (!string.IsNullOrEmpty(commandName))
+            {
+                // Wypowiedz nazwę komendy
+                _speechManager.Speak(commandName, interrupt: true);
+                Console.WriteLine($"Menu command: {commandName}");
+            }
+
+            return false; // Nie blokuj skrótu - pozwól aplikacji go obsłużyć
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"OnApplicationShortcutPressed Error: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Inicjalizacja ikony w tray (zasobnik systemowy)
+    /// </summary>
+    private void InitializeTrayIcon()
+    {
+        if (!System.Windows.Forms.Application.MessageLoop)
+            return;
+
+        _trayIcon = new System.Windows.Forms.NotifyIcon
+        {
+            Text = "Czytnik ekranu Titan",
+            Visible = true,
+            Icon = System.Drawing.SystemIcons.Application // Tymczasowa ikona systemowa
+        };
+
+        // Utwórz menu kontekstowe
+        var contextMenu = new System.Windows.Forms.ContextMenuStrip();
+
+        var settingsItem = new System.Windows.Forms.ToolStripMenuItem("&Ustawienia... (Insert+N, U)");
+        settingsItem.Click += (s, e) => ShowSettings();
+        contextMenu.Items.Add(settingsItem);
+
+        var helpItem = new System.Windows.Forms.ToolStripMenuItem("&Pomoc (Insert+F1)");
+        helpItem.Click += (s, e) => ShowHelp();
+        contextMenu.Items.Add(helpItem);
+
+        contextMenu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+
+        var exitItem = new System.Windows.Forms.ToolStripMenuItem("&Zamknij czytnik ekranu (Alt+F4)");
+        exitItem.Click += (s, e) =>
+        {
+            Console.WriteLine("Zamykanie czytnika ekranu...");
+            _speechManager.Speak("Zamykanie czytnika ekranu");
+            System.Windows.Forms.Application.Exit();
+        };
+        contextMenu.Items.Add(exitItem);
+
+        _trayIcon.ContextMenuStrip = contextMenu;
+
+        // Podwójne kliknięcie otwiera ustawienia
+        _trayIcon.DoubleClick += (s, e) => ShowSettings();
     }
 
     /// <summary>
@@ -379,7 +500,7 @@ public class ScreenReaderEngine : IDisposable
         if (!_keyboardEchoMode.IncludesCharacters())
             return;
 
-        string announcement = GetCharacterAnnouncement(ch);
+        string announcement = GetCharacterAnnouncement(ch, _settings.PhoneticLetters);
         if (!string.IsNullOrEmpty(announcement))
         {
             _speechManager.Speak(announcement);
@@ -420,9 +541,10 @@ public class ScreenReaderEngine : IDisposable
     /// <summary>
     /// Zwraca ogłoszenie dla znaku (z polskim alfabetem fonetycznym)
     /// </summary>
-    private static string GetCharacterAnnouncement(char ch)
+    private static string GetCharacterAnnouncement(char ch, bool usePhonetic)
     {
-        return ch switch
+        // Znaki specjalne - zawsze takie same
+        var specialChar = ch switch
         {
             ' ' => "spacja",
             '\n' => "nowa linia",
@@ -461,9 +583,76 @@ public class ScreenReaderEngine : IDisposable
             '`' => "grawis",
             '~' => "tylda",
             '|' => "kreska pionowa",
+            _ => null
+        };
+
+        if (specialChar != null)
+            return specialChar;
+
+        // Litery - z fonetyką jeśli włączone
+        if (usePhonetic && char.IsLetter(ch))
+        {
+            return GetPolishPhoneticLetter(ch);
+        }
+
+        // Bez fonetyki - zwykły opis
+        return ch switch
+        {
             >= 'A' and <= 'Z' => $"duże {ch}",
             _ => ch.ToString()
         };
+    }
+
+    /// <summary>
+    /// Zwraca polski alfabet fonetyczny dla litery
+    /// </summary>
+    private static string GetPolishPhoneticLetter(char ch)
+    {
+        char lower = char.ToLower(ch);
+        bool isUpper = char.IsUpper(ch);
+        string prefix = isUpper ? "duże " : "";
+
+        string phonetic = lower switch
+        {
+            'a' => "Adam",
+            'ą' => "Aniela",
+            'b' => "Barbara",
+            'c' => "Cezary",
+            'ć' => "Celina",
+            'd' => "Dorota",
+            'e' => "Edward",
+            'ę' => "Ewa",
+            'f' => "Franciszek",
+            'g' => "Genowefa",
+            'h' => "Henryk",
+            'i' => "Irena",
+            'j' => "Jadwiga",
+            'k' => "Karol",
+            'l' => "Leon",
+            'ł' => "Łucja",
+            'm' => "Maria",
+            'n' => "Natalia",
+            'ń' => "Nikodem",
+            'o' => "Olga",
+            'ó' => "Oskar",
+            'p' => "Paweł",
+            'q' => "Québec",
+            'r' => "Roman",
+            's' => "Sylwia",
+            'ś' => "Śpiewak",
+            't' => "Tomasz",
+            'u' => "Urszula",
+            'v' => "Violetta",
+            'w' => "Władysław",
+            'x' => "Ksawery",
+            'y' => "Yxilon",
+            'z' => "Zofia",
+            'ź' => "Źrebię",
+            'ż' => "Żaba",
+            _ => ch.ToString()
+        };
+
+        return $"{prefix}{phonetic}";
     }
 
     /// <summary>
@@ -636,6 +825,9 @@ public class ScreenReaderEngine : IDisposable
                 _currentProcessName = GetProcessName(processId);
                 _isInBrowser = IsBrowserProcess(_currentProcessName);
 
+                // Aktualizuj moduł aplikacji
+                _appModuleManager.UpdateCurrentProcess(_currentProcessName);
+
                 // Sprawdź czy to proces TCE/Titan
                 bool wasInTCE = _isInTCEProcess;
                 _isInTCEProcess = IsTCEProcess(_currentProcessName);
@@ -696,9 +888,42 @@ public class ScreenReaderEngine : IDisposable
                 }
             }
 
-            // Browse mode wyłączony - powodował niestabilność
-            _browseModeHandler.Deactivate();
-            _keyboardHook.IsInBrowseMode = false;
+            // Aktywuj browse mode dla dokumentów webowych w przeglądarkach
+            bool shouldActivateBrowseMode = false;
+            var controlType = element.Current.ControlType;
+
+            if (_isInBrowser && controlType == ControlType.Document)
+            {
+                // Sprawdź czy to rzeczywiście dokument webowy (nie pole edycji)
+                if (!EditableTextHandler.IsEditField(element))
+                {
+                    shouldActivateBrowseMode = true;
+                }
+            }
+
+            if (shouldActivateBrowseMode && !_browseModeHandler.IsActive)
+            {
+                // Aktywuj browse mode
+                try
+                {
+                    _browseModeHandler.Activate(element);
+                    _keyboardHook.IsInBrowseMode = true;
+                    Console.WriteLine("Browse mode activated");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to activate browse mode: {ex.Message}");
+                    _browseModeHandler.Deactivate();
+                    _keyboardHook.IsInBrowseMode = false;
+                }
+            }
+            else if (!shouldActivateBrowseMode && _browseModeHandler.IsActive)
+            {
+                // Dezaktywuj browse mode
+                _browseModeHandler.Deactivate();
+                _keyboardHook.IsInBrowseMode = false;
+                Console.WriteLine("Browse mode deactivated");
+            }
 
             // Sprawdź czy to pole edycji
             bool isEditField = EditableTextHandler.IsEditField(element);
@@ -805,21 +1030,41 @@ public class ScreenReaderEngine : IDisposable
                 var menuParent = GetMenuParent(element);
                 if (menuParent != null || controlType == ControlType.Menu)
                 {
-                    _soundManager.PlayMenuExpanded();
+                    if (_settings.MenuSounds)
+                    {
+                        _soundManager.PlayMenuExpanded();
+                    }
+
                     _lastMenuParent = menuParent ?? element;
                     _lastMenuBar = GetMenuBar(element); // Zapamiętaj pasek menu
 
                     // Ogłoś: "{nazwa menu}, menu, {x} elementów, {pierwszy element}"
-                    var menuName = _lastMenuParent.Current.Name ?? "";
-                    int menuItemCount = CountMenuItems(_lastMenuParent);
+                    var parts = new List<string>();
+
+                    if (_settings.MenuName)
+                    {
+                        var menuName = _lastMenuParent.Current.Name ?? "";
+                        if (!string.IsNullOrEmpty(menuName))
+                        {
+                            parts.Add(menuName);
+                        }
+                    }
+
+                    parts.Add("menu");
+
+                    if (_settings.MenuItemCount)
+                    {
+                        int menuItemCount = CountMenuItems(_lastMenuParent);
+                        if (menuItemCount > 0)
+                        {
+                            parts.Add($"{menuItemCount} elementów");
+                        }
+                    }
+
                     var firstItemDesc = UIAutomationHelper.GetElementDescription(element);
+                    parts.Add(firstItemDesc);
 
-                    string announcement;
-                    if (menuItemCount > 0)
-                        announcement = $"{menuName}, menu, {menuItemCount} elementów, {firstItemDesc}";
-                    else
-                        announcement = $"{menuName}, menu, {firstItemDesc}";
-
+                    string announcement = string.Join(", ", parts);
                     _speechManager.Speak(announcement);
                 }
                 _isInMenu = true;
@@ -841,7 +1086,10 @@ public class ScreenReaderEngine : IDisposable
                 }
 
                 // Wyszliśmy całkowicie z menu i paska menu - odtwórz dźwięk zamknięcia
-                _soundManager.PlayMenuClosed();
+                if (_settings.MenuSounds)
+                {
+                    _soundManager.PlayMenuClosed();
+                }
                 _speechManager.Speak("Zamknięto menu");
                 _isInMenuBar = false;
 
@@ -858,19 +1106,39 @@ public class ScreenReaderEngine : IDisposable
                         if (!Automation.Compare(currentMenuParent, _lastMenuParent))
                         {
                             // To jest nowe podmenu - ogłoś z liczbą elementów i pierwszym elementem
-                            _soundManager.PlayMenuExpanded();
+                            if (_settings.MenuSounds)
+                            {
+                                _soundManager.PlayMenuExpanded();
+                            }
+
                             _lastMenuParent = currentMenuParent;
 
-                            var menuName = _lastMenuParent.Current.Name ?? "";
-                            int menuItemCount = CountMenuItems(_lastMenuParent);
+                            var parts = new List<string>();
+
+                            if (_settings.MenuName)
+                            {
+                                var menuName = _lastMenuParent.Current.Name ?? "";
+                                if (!string.IsNullOrEmpty(menuName))
+                                {
+                                    parts.Add(menuName);
+                                }
+                            }
+
+                            parts.Add("menu");
+
+                            if (_settings.MenuItemCount)
+                            {
+                                int menuItemCount = CountMenuItems(_lastMenuParent);
+                                if (menuItemCount > 0)
+                                {
+                                    parts.Add($"{menuItemCount} elementów");
+                                }
+                            }
+
                             var firstItemDesc = UIAutomationHelper.GetElementDescription(element);
+                            parts.Add(firstItemDesc);
 
-                            string announcement;
-                            if (menuItemCount > 0)
-                                announcement = $"{menuName}, menu, {menuItemCount} elementów, {firstItemDesc}";
-                            else
-                                announcement = $"{menuName}, menu, {firstItemDesc}";
-
+                            string announcement = string.Join(", ", parts);
                             _speechManager.Speak(announcement);
                             return true; // Obsłużone - nie wywołuj AnnounceElement
                         }
@@ -1299,6 +1567,13 @@ public class ScreenReaderEngine : IDisposable
 
     private void OnReadCurrentElement()
     {
+        // Jeśli pokrętło jest włączone i jesteśmy w kategorii ImportantPlaces, aktywuj wybrane miejsce
+        if (_dialManager.IsEnabled && _dialManager.CurrentCategory == DialCategory.ImportantPlaces)
+        {
+            ActivateCurrentImportantPlace();
+            return;
+        }
+
         if (_currentElement != null)
         {
             if (UIAutomationHelper.IsButton(_currentElement))
@@ -1335,8 +1610,8 @@ public class ScreenReaderEngine : IDisposable
         }
         else
         {
-            // Koniec drzewa - tylko dźwięk edge.ogg, bez komunikatu
-            _soundManager.PlayEdge();
+            // Koniec drzewa - dźwięk i komunikat według ustawień
+            AnnounceWindowBounds("Koniec okna", true);
         }
     }
 
@@ -1360,8 +1635,8 @@ public class ScreenReaderEngine : IDisposable
         }
         else
         {
-            // Początek drzewa - tylko dźwięk edge.ogg, bez komunikatu
-            _soundManager.PlayEdge();
+            // Początek drzewa - dźwięk i komunikat według ustawień
+            AnnounceWindowBounds("Początek okna", false);
         }
     }
 
@@ -1372,8 +1647,15 @@ public class ScreenReaderEngine : IDisposable
         if (parent != null && !IsWindowBoundary(parent))
         {
             _currentElement = parent;
+            _hierarchyLevel--; // Zmniejsz poziom hierarchii przy przejściu do rodzica
             _soundManager.PlayZoomOut();
             AnnounceElement(parent, false, skipCursorSound: true, fromNavigation: true);
+
+            // Ogłoś poziom hierarchii jeśli włączone w ustawieniach
+            if (_settings.AnnounceHierarchyLevel && _hierarchyLevel >= 0)
+            {
+                _speechManager.Speak($"poziom {_hierarchyLevel}");
+            }
         }
         else
         {
@@ -1389,8 +1671,15 @@ public class ScreenReaderEngine : IDisposable
         if (child != null && !IsWindowBoundary(child))
         {
             _currentElement = child;
+            _hierarchyLevel++; // Zwiększ poziom hierarchii przy przejściu do dziecka
             _soundManager.PlayZoomIn();
             AnnounceElement(child, false, skipCursorSound: true, fromNavigation: true);
+
+            // Ogłoś poziom hierarchii jeśli włączone w ustawieniach
+            if (_settings.AnnounceHierarchyLevel)
+            {
+                _speechManager.Speak($"poziom {_hierarchyLevel}");
+            }
         }
         else
         {
@@ -1845,46 +2134,200 @@ public class ScreenReaderEngine : IDisposable
         _editableTextHandler.ReadPosition();
     }
 
+    /// <summary>
+    /// Ogłasza granice okna według WindowBoundsMode
+    /// </summary>
+    private void AnnounceWindowBounds(string message, bool isEnd)
+    {
+        var mode = _settings.WindowBoundsMode;
+
+        switch (mode)
+        {
+            case Settings.AnnouncementMode.None:
+                // Brak oznajmiania
+                break;
+
+            case Settings.AnnouncementMode.Sound:
+                // Tylko dźwięk
+                _soundManager.PlayEdge();
+                break;
+
+            case Settings.AnnouncementMode.Speech:
+                // Tylko mowa
+                _speechManager.Speak(message);
+                break;
+
+            case Settings.AnnouncementMode.SpeechAndSound:
+                // Mowa i dźwięk
+                _soundManager.PlayEdge();
+                _speechManager.Speak(message);
+                break;
+        }
+    }
+
     private void AnnounceElement(AutomationElement element, bool checkEdges, bool skipCursorSound = false, bool fromNavigation = false)
     {
-        // Sprawdź kontekst listy
+        // Sprawdź kontekst listy i grupy
         bool enteredNewList = false;
+        bool enteredNewGroup = false;
         AutomationElement? listParent = null;
+        AutomationElement? groupParent = null;
+
+        var controlType = element.Current.ControlType;
+        var elementName = element.Current.Name;
+        Console.WriteLine($"[AnnounceElement] Element: '{elementName}', Type: {controlType.ProgrammaticName}");
 
         if (UIAutomationHelper.IsListItem(element))
         {
+            Console.WriteLine($"[AnnounceElement] Element jest elementem listy");
             listParent = UIAutomationHelper.GetListParent(element);
             if (listParent != null)
             {
+                var listLabel = UIAutomationHelper.GetListLabel(listParent);
+                Console.WriteLine($"[AnnounceElement] Lista znaleziona: '{listLabel}', Type: {listParent.Current.ControlType.ProgrammaticName}");
+
                 // Sprawdź czy to nowa lista (inna niż poprzednia)
                 if (_currentListParent == null)
                 {
                     enteredNewList = true;
+                    Console.WriteLine($"[AnnounceElement] Wchodzimy do nowej listy (poprzednio brak kontekstu)");
                 }
                 else
                 {
                     try
                     {
                         enteredNewList = !Automation.Compare(listParent, _currentListParent);
+                        if (enteredNewList)
+                        {
+                            Console.WriteLine($"[AnnounceElement] Wchodzimy do INNEJ listy");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[AnnounceElement] Jesteśmy w TEJ SAMEJ liście");
+                        }
                     }
                     catch
                     {
                         enteredNewList = true;
+                        Console.WriteLine($"[AnnounceElement] Błąd porównania list - traktujemy jako nową listę");
                     }
                 }
                 _currentListParent = listParent;
             }
+            else
+            {
+                Console.WriteLine($"[AnnounceElement] Element jest elementem listy, ale nie znaleziono rodzica listy");
+            }
+        }
+        else if (_currentListParent != null)
+        {
+            Console.WriteLine($"[AnnounceElement] Element NIE jest elementem listy, ale mamy kontekst listy - sprawdzam hierarchię");
+            // Element nie jest elementem listy - sprawdź czy nadal jesteśmy w kontekście listy
+            // Sprawdź hierarchię do góry, czy aktualna lista jest gdzieś w rodzicach
+            try
+            {
+                bool stillInList = false;
+                var currentParent = TreeWalker.ControlViewWalker.GetParent(element);
+                int depth = 0;
+
+                while (currentParent != null && depth < 10) // Ogranicz głębokość do 10 poziomów
+                {
+                    try
+                    {
+                        if (Automation.Compare(currentParent, _currentListParent))
+                        {
+                            stillInList = true;
+                            Console.WriteLine($"[AnnounceElement] Element jest potomkiem aktualnej listy (głębokość: {depth})");
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                        break;
+                    }
+
+                    currentParent = TreeWalker.ControlViewWalker.GetParent(currentParent);
+                    depth++;
+                }
+
+                // Jeśli nie jesteśmy już w kontekście listy, zresetuj
+                if (!stillInList)
+                {
+                    Console.WriteLine($"[AnnounceElement] Element NIE jest potomkiem aktualnej listy - resetuję kontekst");
+                    _currentListParent = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                // W razie błędu, zresetuj kontekst listy
+                Console.WriteLine($"[AnnounceElement] Błąd sprawdzania hierarchii: {ex.Message} - resetuję kontekst");
+                _currentListParent = null;
+            }
         }
         else
         {
-            // Wyszliśmy z listy
-            _currentListParent = null;
+            Console.WriteLine($"[AnnounceElement] Element NIE jest elementem listy i brak kontekstu listy");
+        }
+
+        // Sprawdź czy wchod zimy do grupy (ale nie z nawigacji obiektowej)
+        if (!fromNavigation && controlType == ControlType.Group)
+        {
+            // Wchodzimy bezpośrednio do grupy (przez Tab)
+            if (_currentGroupParent == null || !Automation.Compare(element, _currentGroupParent))
+            {
+                enteredNewGroup = true;
+                _currentGroupParent = element;
+            }
+        }
+        else if (controlType != ControlType.Group && _currentGroupParent != null)
+        {
+            // Sprawdź czy element jest dzieckiem grupy - jeśli tak, to właśnie weszliśmy do grupy
+            try
+            {
+                var parent = TreeWalker.ControlViewWalker.GetParent(element);
+                if (parent != null && parent.Current.ControlType == ControlType.Group)
+                {
+                    if (_currentGroupParent == null || !Automation.Compare(parent, _currentGroupParent))
+                    {
+                        enteredNewGroup = true;
+                        groupParent = parent;
+                        _currentGroupParent = parent;
+                    }
+                }
+                else
+                {
+                    // Wyszliśmy z grupy
+                    _currentGroupParent = null;
+                }
+            }
+            catch
+            {
+                _currentGroupParent = null;
+            }
+        }
+
+        // Jeśli weszliśmy do nowej grupy, ogłoś tylko grupę i zakończ
+        if (enteredNewGroup && _settings.AnnounceBlockControls)
+        {
+            var groupElement = groupParent ?? element;
+            var groupName = groupElement.Current.Name;
+
+            if (!string.IsNullOrEmpty(groupName))
+            {
+                _speechManager.Speak($"{groupName}, grupa");
+            }
+            else
+            {
+                _speechManager.Speak("Grupa");
+            }
+
+            _soundManager.PlayCursor();
+            return; // Nie ogłaszaj dziecka grupy
         }
 
         // Pobierz informacje o elemencie i sformatuj zgodnie z ustawieniami
         var elementInfo = UIAutomationHelper.GetElementInfo(element);
         var description = UIAutomationHelper.FormatElementDescription(elementInfo, _settings);
-        var controlType = element.Current.ControlType;
 
         // Jeśli opis jest pusty (wszystko wyłączone w ustawieniach), użyj przynajmniej nazwy
         if (string.IsNullOrWhiteSpace(description))
@@ -1892,19 +2335,66 @@ public class ScreenReaderEngine : IDisposable
             description = !string.IsNullOrWhiteSpace(elementInfo.Name) ? elementInfo.Name : elementInfo.ControlTypePolish;
         }
 
-        // Jeśli weszliśmy do nowej listy, dodaj etykietę listy
+        // Jeśli to nawigacja obiektowa i ustawienie AnnounceControlTypesNavigation jest włączone,
+        // upewnij się że typ kontrolki jest w opisie
+        if (fromNavigation && _settings.AnnounceControlTypesNavigation)
+        {
+            // Sprawdź czy typ kontrolki jest już w opisie
+            if (!string.IsNullOrWhiteSpace(elementInfo.ControlTypePolish) &&
+                !description.Contains(elementInfo.ControlTypePolish, StringComparison.OrdinalIgnoreCase))
+            {
+                // Dodaj typ kontrolki do opisu
+                if (!string.IsNullOrWhiteSpace(description))
+                {
+                    description = $"{description}, {elementInfo.ControlTypePolish}";
+                }
+                else
+                {
+                    description = elementInfo.ControlTypePolish;
+                }
+            }
+        }
+
+        // Jeśli weszliśmy do nowej listy, użyj uproszczonego formatu
         if (enteredNewList && listParent != null && _settings.AnnounceBlockControls)
         {
             var listLabel = UIAutomationHelper.GetListLabel(listParent);
+            var itemName = elementInfo.Name ?? "element";
+
             if (!string.IsNullOrEmpty(listLabel))
             {
-                description = $"{listLabel}, lista, {description}";
+                // Format: "{nazwa listy}, lista, {nazwa elementu}"
+                description = $"{listLabel}, lista, {itemName}";
+                Console.WriteLine($"[AnnounceElement] Ogłaszam wejście do nowej listy: '{listLabel}, lista, {itemName}'");
             }
             else
             {
-                description = $"Lista, {description}";
+                // Format: "lista, {nazwa elementu}"
+                description = $"Lista, {itemName}";
+                Console.WriteLine($"[AnnounceElement] Ogłaszam wejście do nowej listy (bez etykiety): 'Lista, {itemName}'");
             }
         }
+        else if (enteredNewList && listParent != null && !_settings.AnnounceBlockControls)
+        {
+            Console.WriteLine($"[AnnounceElement] Weszliśmy do nowej listy, ale AnnounceBlockControls jest WYŁĄCZONE");
+        }
+        else if (enteredNewList && listParent == null)
+        {
+            Console.WriteLine($"[AnnounceElement] enteredNewList=true ale listParent=null - coś poszło nie tak");
+        }
+
+        // Jeśli to element menu, dodaj skrót klawiszowy jeśli istnieje
+        if (_isInMenu && controlType == ControlType.MenuItem)
+        {
+            string? shortcut = GetMenuItemShortcut(element);
+            if (!string.IsNullOrEmpty(shortcut))
+            {
+                description = $"{description}, {shortcut}";
+            }
+        }
+
+        // Pozwól modułowi aplikacji dostosować opis
+        description = _appModuleManager.CustomizeElementDescription(element, description);
 
         Console.WriteLine($"Element: {description}");
 
@@ -1923,6 +2413,9 @@ public class ScreenReaderEngine : IDisposable
             _soundManager.PlayCanInteract();
             return;
         }
+
+        // Powiadom moduł przed ogłoszeniem
+        _appModuleManager.BeforeAnnounceElement(element);
 
         _speechManager.Speak(description);
 
@@ -1961,6 +2454,9 @@ public class ScreenReaderEngine : IDisposable
                 }
             }
         }
+
+        // Powiadom moduł po ogłoszeniu
+        _appModuleManager.AfterAnnounceElement(element);
     }
 
     /// <summary>
@@ -2123,6 +2619,38 @@ public class ScreenReaderEngine : IDisposable
         }
     }
 
+    /// <summary>
+    /// Pobiera skrót klawiszowy elementu menu (AcceleratorKey)
+    /// </summary>
+    private static string? GetMenuItemShortcut(AutomationElement? menuItem)
+    {
+        if (menuItem == null)
+            return null;
+
+        try
+        {
+            // Pobierz AcceleratorKey property
+            object accelObj = menuItem.GetCurrentPropertyValue(AutomationElement.AcceleratorKeyProperty);
+            if (accelObj != null && accelObj != AutomationElement.NotSupported)
+            {
+                string accelerator = accelObj.ToString() ?? "";
+                if (!string.IsNullOrEmpty(accelerator))
+                {
+                    // Normalizuj format (usuń spacje, zamień "Control" na "Ctrl")
+                    accelerator = accelerator.Replace(" ", "");
+                    accelerator = accelerator.Replace("Control", "Ctrl", StringComparison.OrdinalIgnoreCase);
+                    return accelerator;
+                }
+            }
+        }
+        catch
+        {
+            // Niektóre elementy menu nie mają AcceleratorKey
+        }
+
+        return null;
+    }
+
     private AutomationElement? GetContainingWindow(AutomationElement? element)
     {
         var current = element;
@@ -2238,6 +2766,19 @@ public class ScreenReaderEngine : IDisposable
     public string CycleKeyboardEcho()
     {
         _keyboardEchoMode = _keyboardEchoMode.Next();
+
+        // Zapisz do ustawień
+        var setting = _keyboardEchoMode switch
+        {
+            KeyboardEchoMode.None => Settings.KeyboardEchoSetting.None,
+            KeyboardEchoMode.Characters => Settings.KeyboardEchoSetting.Characters,
+            KeyboardEchoMode.Words => Settings.KeyboardEchoSetting.Words,
+            KeyboardEchoMode.WordsAndChars => Settings.KeyboardEchoSetting.CharactersAndWords,
+            _ => Settings.KeyboardEchoSetting.Characters
+        };
+        _settings.KeyboardEcho = setting;
+        _settings.Save();
+
         return $"Echo klawiszy: {_keyboardEchoMode.GetPolishName()}";
     }
 
@@ -2340,6 +2881,11 @@ public class ScreenReaderEngine : IDisposable
                 NavigateByType(BrowseMode.QuickNavType.Heading, false);
                 return;
 
+            case DialCategory.ImportantPlaces:
+                _soundManager.PlayDialItem();
+                NavigateImportantPlace(false);
+                return;
+
             default:
                 _soundManager.PlayDialItem();
                 string? message = _dialManager.ExecuteItemChange(false, _speechManager);
@@ -2378,6 +2924,11 @@ public class ScreenReaderEngine : IDisposable
             case DialCategory.Headings:
                 _soundManager.PlayDialItem();
                 NavigateByType(BrowseMode.QuickNavType.Heading, true);
+                return;
+
+            case DialCategory.ImportantPlaces:
+                _soundManager.PlayDialItem();
+                NavigateImportantPlace(true);
                 return;
 
             default:
@@ -2435,7 +2986,18 @@ public class ScreenReaderEngine : IDisposable
             _dialCharIndex = currentIndex;
 
             char c = text[currentIndex];
-            string charName = _editNavigator.GetCharacterDescription(c);
+
+            // Użyj fonetyki jeśli włączone w ustawieniach
+            string charName;
+            if (_settings.PhoneticInDial)
+            {
+                charName = GetCharacterAnnouncement(c, true); // Zawsze z fonetyką w dial
+            }
+            else
+            {
+                charName = _editNavigator.GetCharacterDescription(c);
+            }
+
             _speechManager.Speak(charName);
         }
         catch (Exception ex)
@@ -2519,6 +3081,88 @@ public class ScreenReaderEngine : IDisposable
     }
 
     /// <summary>
+    /// Nawigacja po ważnych miejscach
+    /// </summary>
+    private void NavigateImportantPlace(bool next)
+    {
+        try
+        {
+            var places = _importantPlacesManager.GetPlacesForCurrentApp(_currentProcessName);
+            if (places.Count == 0)
+            {
+                _speechManager.Speak("Brak ważnych miejsc");
+                return;
+            }
+
+            int currentIndex = _dialImportantPlaceIndex;
+
+            if (next)
+            {
+                currentIndex++;
+                if (currentIndex >= places.Count)
+                {
+                    currentIndex = places.Count - 1;
+                    _soundManager.PlayEdge();
+                }
+            }
+            else
+            {
+                currentIndex--;
+                if (currentIndex < 0)
+                {
+                    currentIndex = 0;
+                    _soundManager.PlayEdge();
+                }
+            }
+
+            _dialImportantPlaceIndex = currentIndex;
+
+            var place = places[currentIndex];
+            _speechManager.Speak($"{place.Name}, {currentIndex + 1} z {places.Count}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"NavigateImportantPlace: {ex.Message}");
+            _speechManager.Speak("Błąd nawigacji");
+        }
+    }
+
+    /// <summary>
+    /// Aktywuje wybrane ważne miejsce (NumPad 5 w kategorii ImportantPlaces)
+    /// </summary>
+    private void ActivateCurrentImportantPlace()
+    {
+        try
+        {
+            var places = _importantPlacesManager.GetPlacesForCurrentApp(_currentProcessName);
+            if (places.Count == 0)
+            {
+                _speechManager.Speak("Brak ważnych miejsc");
+                return;
+            }
+
+            if (_dialImportantPlaceIndex >= 0 && _dialImportantPlaceIndex < places.Count)
+            {
+                var place = places[_dialImportantPlaceIndex];
+                bool success = _importantPlacesManager.NavigateToPlace(place);
+                if (success)
+                {
+                    _soundManager.PlayClicked();
+                }
+            }
+            else
+            {
+                _speechManager.Speak("Błędny indeks miejsca");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ActivateCurrentImportantPlace: {ex.Message}");
+            _speechManager.Speak("Błąd aktywacji miejsca");
+        }
+    }
+
+    /// <summary>
     /// Pobiera tekst z elementu
     /// </summary>
     private string GetElementText(AutomationElement element)
@@ -2547,6 +3191,7 @@ public class ScreenReaderEngine : IDisposable
     // Indeksy dla nawigacji po znakach i słowach
     private int _dialCharIndex = 0;
     private int _dialWordIndex = 0;
+    private int _dialImportantPlaceIndex = 0;
 
     /// <summary>
     /// Obsługa NumPad Slash (/) - aktywuje nawigowany element
@@ -2706,12 +3351,16 @@ public class ScreenReaderEngine : IDisposable
         _accessibilityManager.Dispose();
         _hintManager.Dispose();
         _virtualScreenManager.Dispose();
+        _appModuleManager.Dispose();
 
         _soundManager.Dispose();
         _focusTracker.Dispose();
         _keyboardHook.Dispose();
         _speechManager.Dispose();
         _dialogMonitor?.Dispose();
+        _trayIcon?.Dispose();
+        _contextMenu?.Dispose();
+        _nvdaBridge?.Dispose();
 
         Instance = null;
     }

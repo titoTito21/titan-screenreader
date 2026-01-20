@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "WebSearch",
+      "Bash(dotnet build:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(dotnet restore:*)",
+      "WebFetch(domain:developer.chrome.com)",
+      "WebFetch(domain:chromium.googlesource.com)",
+      "WebFetch(domain:lukecodesit.galamdring.com)",
+      "Bash(mkdir:*)",
+      "Bash(dir:*)",
+      "Bash(powershell -Command \"Remove-Item -Recurse -Force ''C:\\\\Users\\\\win8k\\\\.gemini\\\\antigravity\\\\scratch\\\\ScreenReader\\\\ScreenReader\\\\AppModules''\")",
+      "Bash(dotnet run)",
+      "Bash(timeout 10 dotnet run:*)",
+      "Bash(timeout 15 dotnet run:*)",
+      "Bash(dotnet publish:*)",
+      "Bash(powershell:*)",
+      "Bash(findstr:*)",
+      "Bash(timeout:*)",
+      "Bash(taskkill /F /PID 5464)",
+      "Bash(Select-String -Pattern \"error|warning|Kompilacja\")",
+      "Bash(Select-Object -First 30)"
+    ]
+  }
+}

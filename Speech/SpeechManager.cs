@@ -22,6 +22,7 @@ public class SpeechManager : IDisposable
     private SpatialAudioRenderer? _spatialRenderer;
     private bool _disposed;
     private bool _isWarmedUp;
+    private int _pitch; // Przechowuj wartość pitch (SAPI5 nie obsługuje, tylko OneCore)
 
     public SpeechManager()
     {
@@ -60,14 +61,16 @@ public class SpeechManager : IDisposable
             Console.WriteLine($"Błąd wyboru głosu: {ex.Message}");
         }
 
-        // Załaduj szybkość i głośność z ustawień
+        // Załaduj szybkość, głośność i pitch z ustawień
         int savedRate = settings.Rate;
         int savedVolume = settings.Volume;
+        _pitch = settings.Pitch;
 
         _synthesizer.Rate = Math.Clamp(savedRate, -10, 10);
         _synthesizer.Volume = Math.Clamp(savedVolume, 0, 100);
+        // SAPI5 nie obsługuje pitch bezpośrednio - wymaga SSML
 
-        Console.WriteLine($"Załadowano ustawienia: Rate={savedRate}, Volume={savedVolume}");
+        Console.WriteLine($"Załadowano ustawienia: Rate={savedRate}, Volume={savedVolume}, Pitch={_pitch} (uwaga: pitch nie jest wspierany przez SAPI5)");
 
         // Załaduj syntezator z ustawień
         string savedSynth = settings.Synthesizer;

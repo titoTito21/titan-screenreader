@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "Ku34HovdozU=",
+  "dgSpecHash": "safYeLl5a2g=",
   "success": true,
-  "projectFilePath": "C:\\Users\\win8k\\.gemini\\antigravity\\scratch\\ScreenReader\\ScreenReader\\ScreenReader.csproj",
+  "projectFilePath": "C:\\Users\\win8k\\OneDrive\\projects\\ScreenReader\\ScreenReader\\ScreenReader.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\win8k\\.nuget\\packages\\microsoft.net.illink.tasks\\8.0.22\\microsoft.net.illink.tasks.8.0.22.nupkg.sha512",
     "C:\\Users\\win8k\\.nuget\\packages\\microsoft.netcore.platforms\\3.1.0\\microsoft.netcore.platforms.3.1.0.nupkg.sha512",

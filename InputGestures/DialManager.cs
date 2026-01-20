@@ -141,11 +141,11 @@ public class DialManager
         {
             // Odśwież kategorie przy włączeniu
             RefreshEnabledCategories();
-            return $"Pokrętło włączone, {GetCategoryName(CurrentCategory)}";
+            return $"TPad, {GetCategoryName(CurrentCategory)}";
         }
         else
         {
-            return "Pokrętło wyłączone";
+            return "Nawigacja obiektowa";
         }
     }
 

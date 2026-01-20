@@ -1,11 +1,11 @@
 using System.Windows.Automation;
+using ScreenReader.VirtualBuffers;
 
 namespace ScreenReader.BrowseMode;
 
 /// <summary>
 /// Obsługuje tryb przeglądania (browse mode) dla dokumentów webowych
-/// Uproszczona wersja - używa bezpośredniej nawigacji TreeWalker zamiast wirtualnego bufora
-/// Działa podobnie do VoiceOver na macOS
+/// Używa VirtualBuffer dla przeglądarek Chromium, TreeWalker jako fallback
 /// </summary>
 public class BrowseModeHandler : IDisposable
 {
@@ -14,11 +14,15 @@ public class BrowseModeHandler : IDisposable
     private bool _passThrough;
     private bool _disposed;
 
-    // Nawigacja po tekście dokumentu
+    // Nawigacja po tekście dokumentu (fallback)
     private string _documentText = "";
     private int _charPosition;
     private int _linePosition;
     private string[] _lines = Array.Empty<string>();
+
+    // Virtual Buffer (dla przeglądarek)
+    private VirtualBuffer? _virtualBuffer;
+    private bool _useVirtualBuffer;
 
     private static readonly TreeWalker Walker = TreeWalker.ControlViewWalker;
 
@@ -57,17 +61,64 @@ public class BrowseModeHandler : IDisposable
         _currentElement = document;
         _passThrough = false;
 
-        // Znajdź pierwszy interaktywny element
-        var firstChild = Walker.GetFirstChild(document);
-        if (firstChild != null)
+        // Sprawdź czy to przeglądarka - użyj Virtual Buffer
+        _useVirtualBuffer = IsBrowserDocument(document);
+
+        if (_useVirtualBuffer)
         {
-            _currentElement = firstChild;
+            try
+            {
+                // Użyj VirtualBuffer dla lepszej wydajności i funkcjonalności
+                _virtualBuffer?.Dispose();
+                _virtualBuffer = new VirtualBuffer();
+                _virtualBuffer.LoadDocument(document);
+
+                Console.WriteLine($"Virtual Buffer loaded: {_virtualBuffer.Length} chars, {_virtualBuffer.NodeCount} nodes");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load Virtual Buffer: {ex.Message}");
+                _useVirtualBuffer = false;
+                _virtualBuffer?.Dispose();
+                _virtualBuffer = null;
+            }
         }
 
-        // Zbuduj tekst dokumentu dla nawigacji po liniach i znakach
-        BuildDocumentText();
+        // Fallback lub gdy VirtualBuffer się nie powiódł
+        if (!_useVirtualBuffer)
+        {
+            // Znajdź pierwszy interaktywny element
+            var firstChild = Walker.GetFirstChild(document);
+            if (firstChild != null)
+            {
+                _currentElement = firstChild;
+            }
+
+            // Zbuduj tekst dokumentu dla nawigacji po liniach i znakach
+            BuildDocumentText();
+        }
 
         Announce?.Invoke("Tryb przeglądania");
+    }
+
+    /// <summary>
+    /// Sprawdza czy dokument pochodzi z przeglądarki
+    /// </summary>
+    private static bool IsBrowserDocument(AutomationElement document)
+    {
+        try
+        {
+            var processId = document.Current.ProcessId;
+            using var process = System.Diagnostics.Process.GetProcessById(processId);
+            var processName = process.ProcessName.ToLowerInvariant();
+
+            return processName is "chrome" or "msedge" or "firefox" or "brave" or
+                   "vivaldi" or "opera" or "chromium" or "waterfox" or "librewolf";
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -142,6 +193,10 @@ public class BrowseModeHandler : IDisposable
         _rootDocument = null;
         _currentElement = null;
         _passThrough = false;
+        _useVirtualBuffer = false;
+
+        _virtualBuffer?.Dispose();
+        _virtualBuffer = null;
     }
 
     /// <summary>

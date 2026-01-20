@@ -65,6 +65,8 @@ public class ImportantPlacesManager
         _soundManager = soundManager;
         InitializeGlobalPlaces();
         InitializeTCEPlaces();
+        InitializeExplorerPlaces();
+        InitializeBrowserPlaces();
     }
 
     /// <summary>
@@ -150,6 +152,90 @@ public class ImportantPlacesManager
         _appPlaces["tce"] = tcePlaces;
         _appPlaces["titan"] = tcePlaces;
         _appPlaces["titancommunicationenvironment"] = tcePlaces;
+    }
+
+    /// <summary>
+    /// Inicjalizuje ważne miejsca dla Windows Explorera
+    /// </summary>
+    private void InitializeExplorerPlaces()
+    {
+        var explorerPlaces = new List<ImportantPlace>
+        {
+            new ImportantPlace
+            {
+                Name = "Pasek adresu",
+                Description = "Przejście do paska adresu w Explorerze",
+                FindElement = () => FindExplorerElement("AddressBar")
+            },
+            new ImportantPlace
+            {
+                Name = "Lista plików",
+                Description = "Przejście do listy plików",
+                FindElement = () => FindExplorerElement("FileList")
+            },
+            new ImportantPlace
+            {
+                Name = "Drzewo folderów",
+                Description = "Przejście do drzewa folderów",
+                FindElement = () => FindExplorerElement("FolderTree")
+            },
+            new ImportantPlace
+            {
+                Name = "Wyszukiwarka",
+                Description = "Przejście do pola wyszukiwania",
+                FindElement = () => FindExplorerElement("SearchBox")
+            },
+            new ImportantPlace
+            {
+                Name = "Panel szczegółów",
+                Description = "Przejście do panelu szczegółów",
+                FindElement = () => FindExplorerElement("DetailsPane")
+            }
+        };
+
+        _appPlaces["explorer"] = explorerPlaces;
+    }
+
+    /// <summary>
+    /// Inicjalizuje ważne miejsca dla przeglądarek internetowych
+    /// </summary>
+    private void InitializeBrowserPlaces()
+    {
+        var browserPlaces = new List<ImportantPlace>
+        {
+            new ImportantPlace
+            {
+                Name = "Pasek adresu",
+                Description = "Przejście do paska adresu przeglądarki",
+                FindElement = () => FindBrowserElement("AddressBar")
+            },
+            new ImportantPlace
+            {
+                Name = "Strona główna",
+                Description = "Przejście do głównej zawartości strony",
+                FindElement = () => FindBrowserElement("MainContent")
+            },
+            new ImportantPlace
+            {
+                Name = "Nawigacja",
+                Description = "Przejście do obszaru nawigacji",
+                FindElement = () => FindBrowserElement("Navigation")
+            },
+            new ImportantPlace
+            {
+                Name = "Wyszukiwarka",
+                Description = "Przejście do pola wyszukiwania na stronie",
+                FindElement = () => FindBrowserElement("Search")
+            }
+        };
+
+        // Dodaj dla wszystkich popularnych przeglądarek
+        _appPlaces["chrome"] = browserPlaces;
+        _appPlaces["msedge"] = browserPlaces;
+        _appPlaces["firefox"] = browserPlaces;
+        _appPlaces["brave"] = browserPlaces;
+        _appPlaces["opera"] = browserPlaces;
+        _appPlaces["vivaldi"] = browserPlaces;
     }
 
     /// <summary>
@@ -388,6 +474,192 @@ public class ImportantPlacesManager
                     return window.FindFirst(
                         TreeScope.Descendants,
                         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.List));
+
+                default:
+                    return null;
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private AutomationElement? FindExplorerElement(string elementType)
+    {
+        try
+        {
+            IntPtr foregroundHwnd = GetForegroundWindow();
+            if (foregroundHwnd == IntPtr.Zero)
+                return null;
+
+            var window = AutomationElement.FromHandle(foregroundHwnd);
+            if (window == null)
+                return null;
+
+            switch (elementType)
+            {
+                case "AddressBar":
+                    // Znajdź pasek adresu (Edit lub ComboBox z nazwą zawierającą "Address" lub AutomationId)
+                    var addressBar = window.FindFirst(
+                        TreeScope.Descendants,
+                        new AndCondition(
+                            new OrCondition(
+                                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
+                                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox)
+                            ),
+                            new PropertyCondition(AutomationElement.AutomationIdProperty, "41477")
+                        ));
+
+                    if (addressBar == null)
+                    {
+                        // Alternatywna metoda - szukaj po nazwie
+                        addressBar = window.FindFirst(
+                            TreeScope.Descendants,
+                            new PropertyCondition(AutomationElement.NameProperty, "Adres"));
+                    }
+                    return addressBar;
+
+                case "FileList":
+                    // Znajdź główną listę plików (DataGrid lub List)
+                    return window.FindFirst(
+                        TreeScope.Descendants,
+                        new OrCondition(
+                            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.DataGrid),
+                            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.List)
+                        ));
+
+                case "FolderTree":
+                    // Znajdź drzewo folderów (TreeView)
+                    return window.FindFirst(
+                        TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Tree));
+
+                case "SearchBox":
+                    // Znajdź pole wyszukiwania
+                    var searchBox = window.FindFirst(
+                        TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.AutomationIdProperty, "1001"));
+
+                    if (searchBox == null)
+                    {
+                        // Alternatywna metoda
+                        searchBox = window.FindFirst(
+                            TreeScope.Descendants,
+                            new AndCondition(
+                                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
+                                new PropertyCondition(AutomationElement.NameProperty, "Szukaj")
+                            ));
+                    }
+                    return searchBox;
+
+                case "DetailsPane":
+                    // Znajdź panel szczegółów (zwykle Pane z nazwą "Details")
+                    return window.FindFirst(
+                        TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.NameProperty, "Details"));
+
+                default:
+                    return null;
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private AutomationElement? FindBrowserElement(string elementType)
+    {
+        try
+        {
+            IntPtr foregroundHwnd = GetForegroundWindow();
+            if (foregroundHwnd == IntPtr.Zero)
+                return null;
+
+            var window = AutomationElement.FromHandle(foregroundHwnd);
+            if (window == null)
+                return null;
+
+            switch (elementType)
+            {
+                case "AddressBar":
+                    // Znajdź pasek adresu przeglądarki (zwykle ComboBox lub Edit)
+                    var addressBar = window.FindFirst(
+                        TreeScope.Descendants,
+                        new AndCondition(
+                            new OrCondition(
+                                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
+                                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox)
+                            ),
+                            new PropertyCondition(AutomationElement.NameProperty, "Pasek adresu i wyszukiwania")
+                        ));
+
+                    if (addressBar == null)
+                    {
+                        // Alternatywna metoda - szukaj po AutomationId (Chrome/Edge)
+                        addressBar = window.FindFirst(
+                            TreeScope.Descendants,
+                            new PropertyCondition(AutomationElement.AutomationIdProperty, "Chrome Legacy Window"));
+                    }
+                    return addressBar;
+
+                case "MainContent":
+                    // Znajdź główny obszar zawartości (Document z rolą main)
+                    var mainContent = window.FindFirst(
+                        TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
+
+                    // Spróbuj znaleźć element z rolą ARIA "main"
+                    if (mainContent != null)
+                    {
+                        try
+                        {
+                            var mainLandmark = mainContent.FindFirst(
+                                TreeScope.Descendants,
+                                new PropertyCondition(AutomationElement.LocalizedControlTypeProperty, "main"));
+                            return mainLandmark ?? mainContent;
+                        }
+                        catch { }
+                    }
+                    return mainContent;
+
+                case "Navigation":
+                    // Znajdź nawigację (ARIA role="navigation")
+                    var document = window.FindFirst(
+                        TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
+
+                    if (document != null)
+                    {
+                        return document.FindFirst(
+                            TreeScope.Descendants,
+                            new PropertyCondition(AutomationElement.LocalizedControlTypeProperty, "navigation"));
+                    }
+                    return null;
+
+                case "Search":
+                    // Znajdź pole wyszukiwania na stronie (ARIA role="search" lub searchbox)
+                    var doc = window.FindFirst(
+                        TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
+
+                    if (doc != null)
+                    {
+                        var searchRegion = doc.FindFirst(
+                            TreeScope.Descendants,
+                            new PropertyCondition(AutomationElement.LocalizedControlTypeProperty, "search"));
+
+                        if (searchRegion != null)
+                        {
+                            // Znajdź pole edycji wewnątrz
+                            var searchBox = searchRegion.FindFirst(
+                                TreeScope.Descendants,
+                                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit));
+                            return searchBox ?? searchRegion;
+                        }
+                    }
+                    return null;
 
                 default:
                     return null;

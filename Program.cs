@@ -89,6 +89,11 @@ class Program
                 case "/?":
                     PrintHelp();
                     return true;
+
+                case "--test-nvda":
+                case "-test-nvda":
+                    Interop.NVDAControllerTester.RunTests();
+                    return true;
             }
         }
         return false;
@@ -109,6 +114,7 @@ class Program
         Console.WriteLine("  --restart               Restartuje czytnik ekranu");
         Console.WriteLine("  --soundsOff             Wyłącza dźwięki");
         Console.WriteLine("  --soundsOn              Włącza dźwięki");
+        Console.WriteLine("  --test-nvda             Testuje NVDA Controller Bridge (wymaga uruchomionego TSR)");
         Console.WriteLine("  --help                  Wyświetla tę pomoc");
     }
 

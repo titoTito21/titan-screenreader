@@ -390,9 +390,25 @@ public class UIAutomationHelper
             var parentType = parent.Current.ControlType;
             if (parentType == ControlType.List ||
                 parentType == ControlType.Tree ||
-                parentType == ControlType.DataGrid)
+                parentType == ControlType.DataGrid ||
+                parentType == ControlType.Table)
             {
                 return parent;
+            }
+
+            // W niektórych przypadkach (np. Eksplorator Windows) lista może być zagnieżdżona
+            // Spróbuj poszukać jeszcze jeden poziom wyżej
+            var grandParent = GetParent(parent);
+            if (grandParent != null)
+            {
+                var grandParentType = grandParent.Current.ControlType;
+                if (grandParentType == ControlType.List ||
+                    grandParentType == ControlType.Tree ||
+                    grandParentType == ControlType.DataGrid ||
+                    grandParentType == ControlType.Table)
+                {
+                    return grandParent;
+                }
             }
         }
         catch { }
@@ -667,9 +683,37 @@ public class UIAutomationHelper
 
         try
         {
-            return element.Current.ControlType == ControlType.ListItem ||
-                   element.Current.ControlType == ControlType.DataItem ||
-                   element.Current.ControlType == ControlType.TreeItem;
+            var controlType = element.Current.ControlType;
+
+            // Sprawdź standardowe typy elementów listy
+            if (controlType == ControlType.ListItem ||
+                controlType == ControlType.DataItem ||
+                controlType == ControlType.TreeItem)
+            {
+                return true;
+            }
+
+            // Sprawdź czy element ma wzorzec SelectionItem (elementy wybieralne w liście/gridzie)
+            // To obejmuje elementy w Eksploratorze Windows, które mogą być typu Custom
+            object? pattern;
+            if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern))
+            {
+                // Sprawdź czy rodzic to lista/grid/tree
+                var parent = GetParent(element);
+                if (parent != null)
+                {
+                    var parentType = parent.Current.ControlType;
+                    if (parentType == ControlType.List ||
+                        parentType == ControlType.Tree ||
+                        parentType == ControlType.DataGrid ||
+                        parentType == ControlType.Table)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
         catch
         {

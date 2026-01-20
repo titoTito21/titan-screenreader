@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Users\\win8k\\.gemini\\antigravity\\scratch\\ScreenReader\\ScreenReader\\ScreenReader.csproj": {}
+    "C:\\Users\\win8k\\OneDrive\\projects\\ScreenReader\\ScreenReader\\ScreenReader.csproj": {}
   },
   "projects": {
-    "C:\\Users\\win8k\\.gemini\\antigravity\\scratch\\ScreenReader\\ScreenReader\\ScreenReader.csproj": {
+    "C:\\Users\\win8k\\OneDrive\\projects\\ScreenReader\\ScreenReader\\ScreenReader.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\Users\\win8k\\.gemini\\antigravity\\scratch\\ScreenReader\\ScreenReader\\ScreenReader.csproj",
+        "projectUniqueName": "C:\\Users\\win8k\\OneDrive\\projects\\ScreenReader\\ScreenReader\\ScreenReader.csproj",
         "projectName": "ScreenReader",
-        "projectPath": "C:\\Users\\win8k\\.gemini\\antigravity\\scratch\\ScreenReader\\ScreenReader\\ScreenReader.csproj",
+        "projectPath": "C:\\Users\\win8k\\OneDrive\\projects\\ScreenReader\\ScreenReader\\ScreenReader.csproj",
         "packagesPath": "C:\\Users\\win8k\\.nuget\\packages\\",
-        "outputPath": "C:\\Users\\win8k\\.gemini\\antigravity\\scratch\\ScreenReader\\ScreenReader\\obj\\",
+        "outputPath": "C:\\Users\\win8k\\OneDrive\\projects\\ScreenReader\\ScreenReader\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"

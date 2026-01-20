@@ -78,6 +78,25 @@ public class EditableTextHandler : IDisposable
 
         try
         {
+            // Sprawdź granice tekstu jeśli włączone w ustawieniach
+            var settings = Settings.SettingsManager.Instance;
+            if (settings.AnnounceTextBounds)
+            {
+                int position = GetCaretPosition();
+                string text = GetFullText();
+
+                if (position == 0 && text.Length > 0)
+                {
+                    Announce?.Invoke("Początek dokumentu");
+                    return;
+                }
+                else if (position >= text.Length && text.Length > 0)
+                {
+                    Announce?.Invoke("Koniec dokumentu");
+                    return;
+                }
+            }
+
             string ch = GetCharacterAtCaret();
             if (!string.IsNullOrEmpty(ch))
             {

@@ -208,6 +208,13 @@ public class KeyboardHookManager : IDisposable
     /// <summary>Event wywoływany gdy zmieni się stan ScrollLock (true = włączony)</summary>
     public event Action<bool>? ScrollLockToggled;
 
+    /// <summary>
+    /// Event wywoływany gdy użytkownik naciśnie skrót aplikacji (Ctrl+coś, Alt+coś, etc.)
+    /// Parametry: (Keys key, bool ctrl, bool alt, bool shift)
+    /// Zwraca true jeśli skrót został obsłużony (blokuje domyślną akcję)
+    /// </summary>
+    public event Func<Keys, bool, bool, bool, bool>? ApplicationShortcutPressed;
+
     public void Start()
     {
         lock (_hookLock)
@@ -499,6 +506,25 @@ public class KeyboardHookManager : IDisposable
         {
             // Nie blokuj samego Insert
             return false;
+        }
+
+        // Wykryj skróty aplikacji (Ctrl+coś, Alt+coś, Ctrl+Shift+coś)
+        // Nie blokujemy Insert+coś (to są gesty screen readera)
+        if (!_insertPressed && ((_ctrlPressed && !_altPressed) || (_altPressed && !_ctrlPressed) || (_ctrlPressed && _altPressed) || (_ctrlPressed && _shiftPressed && !_altPressed)))
+        {
+            // Nie ogłaszaj samych modyfikatorów
+            if (vkCode != 0x11 && vkCode != 0xA2 && vkCode != 0xA3 && // Ctrl
+                vkCode != 0x12 && vkCode != 0xA4 && vkCode != 0xA5 && // Alt
+                vkCode != 0x10 && vkCode != 0xA0 && vkCode != 0xA1)   // Shift
+            {
+                if (ApplicationShortcutPressed != null)
+                {
+                    Keys key = (Keys)vkCode;
+                    bool handled = ApplicationShortcutPressed(key, _ctrlPressed, _altPressed, _shiftPressed);
+                    // Nie blokujemy skrótów aplikacji - pozwalamy im działać normalnie
+                    // (handled może być użyte w przyszłości jeśli chcemy blokować niektóre skróty)
+                }
+            }
         }
 
         // Sprawdź gesty (Insert+...)

@@ -532,6 +532,13 @@ public class VirtualScreenManager : IDisposable
                 HandleMouseClick(x, y, isDouble: false);
                 break;
 
+            case WM_LBUTTONUP:
+            case WM_RBUTTONUP:
+            case WM_MBUTTONUP:
+                // BLOKUJ wszystkie UP events - nie przekazuj do systemu
+                // To zapobiega destabilizacji screen readera przez przeciekające kliknięcia
+                break;
+
             case WM_RBUTTONDOWN:
                 // Prawy przycisk = menu kontekstowe
                 ExecuteContextMenu();
@@ -619,17 +626,32 @@ public class VirtualScreenManager : IDisposable
                 int dx = x - _gestureStartX;
                 int dy = y - _gestureStartY;
                 int totalMovement = Math.Abs(dx) + Math.Abs(dy);
+                var gestureElapsed = (now - _gestureStartTime).TotalMilliseconds;
+
+                // PRIORYTET 1: Sprawdź swipe PRZED eksploracją (szybki gest w <300ms)
+                if (gestureElapsed < SwipeMaxTimeMs)
+                {
+                    float totalVelocity = MathF.Sqrt(_velocityX * _velocityX + _velocityY * _velocityY);
+
+                    if (totalMovement > MinSwipeDistance && totalVelocity > MinSwipeVelocity)
+                    {
+                        // To jest swipe! Wykonaj natychmiast
+                        ExecuteSwipe(dx, dy, Math.Abs(dx), Math.Abs(dy));
+                        _gestureState = GestureState.Ended;
+                        Console.WriteLine($"Swipe: wykryty w stanie Possible (distance={totalMovement}px, velocity={totalVelocity:F2} px/ms, elapsed={gestureElapsed:F0}ms)");
+                        return;
+                    }
+                }
 
                 if (totalMovement > PressThreshold)
                 {
-                    // Ruch potwierdzony - przejdź do Began
+                    // Ruch potwierdzony - przejdź do Began (ale nie był swipe)
                     _gestureState = GestureState.Began;
                     GestureBegan();
                 }
                 else
                 {
                     // Mały ruch - sprawdź czy minęło 500ms aby rozpocząć eksplorację
-                    var gestureElapsed = (now - _gestureStartTime).TotalMilliseconds;
                     if (gestureElapsed >= ExplorationStartDelayMs && !_explorationStarted)
                     {
                         // Rozpocznij eksplorację po 500ms przytrzymania
