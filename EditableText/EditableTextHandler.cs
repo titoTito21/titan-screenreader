@@ -100,8 +100,17 @@ public class EditableTextHandler : IDisposable
             string ch = GetCharacterAtCaret();
             if (!string.IsNullOrEmpty(ch))
             {
-                // Użyj alfabetu fonetycznego dla liter
-                string announcement = GetPhoneticAnnouncement(ch);
+                // Użyj alfabetu fonetycznego TYLKO jeśli włączone w ustawieniach
+                string announcement;
+                if (settings.PhoneticLetters && char.IsLetter(ch[0]))
+                {
+                    announcement = GetPhoneticAnnouncement(ch);
+                }
+                else
+                {
+                    // Bez fonetyki - tylko znak lub jego opis
+                    announcement = GetSimpleAnnouncement(ch);
+                }
                 Announce?.Invoke(announcement);
             }
             else
@@ -353,8 +362,27 @@ public class EditableTextHandler : IDisposable
     }
 
     /// <summary>
-    /// Pobiera fonetyczne ogłoszenie dla znaku (publiczna wersja)
+    /// Pobiera ogłoszenie dla znaku (publiczna wersja) - respektuje ustawienia fonetyki
     /// </summary>
+    public static string GetAnnouncementForCharacter(char ch)
+    {
+        var settings = Settings.SettingsManager.Instance;
+        string chStr = ch.ToString();
+
+        if (settings.PhoneticLetters && char.IsLetter(ch))
+        {
+            return GetPhoneticAnnouncement(chStr);
+        }
+        else
+        {
+            return GetSimpleAnnouncement(chStr);
+        }
+    }
+
+    /// <summary>
+    /// Pobiera fonetyczne ogłoszenie dla znaku (dla kompatybilności wstecznej)
+    /// </summary>
+    [Obsolete("Użyj GetAnnouncementForCharacter zamiast tego")]
     public static string GetPhoneticForCharacter(char ch)
     {
         return GetPhoneticAnnouncement(ch.ToString());
@@ -537,6 +565,60 @@ public class EditableTextHandler : IDisposable
             end++;
 
         return text.Substring(start, end - start).Trim();
+    }
+
+    /// <summary>
+    /// Pobiera prosty opis znaku (bez fonetyki)
+    /// </summary>
+    private static string GetSimpleAnnouncement(string ch)
+    {
+        if (string.IsNullOrEmpty(ch))
+            return "";
+
+        char c = ch[0];
+
+        // Znaki specjalne - zawsze z opisem
+        return c switch
+        {
+            ' ' => "spacja",
+            '\n' => "nowa linia",
+            '\r' => "powrót karetki",
+            '\t' => "tabulator",
+            '.' => "kropka",
+            ',' => "przecinek",
+            ';' => "średnik",
+            ':' => "dwukropek",
+            '!' => "wykrzyknik",
+            '?' => "znak zapytania",
+            '-' => "myślnik",
+            '_' => "podkreślenie",
+            '(' => "nawias otwierający",
+            ')' => "nawias zamykający",
+            '[' => "nawias kwadratowy otwierający",
+            ']' => "nawias kwadratowy zamykający",
+            '{' => "nawias klamrowy otwierający",
+            '}' => "nawias klamrowy zamykający",
+            '<' => "mniejszy niż",
+            '>' => "większy niż",
+            '/' => "ukośnik",
+            '\\' => "ukośnik odwrotny",
+            '@' => "małpa",
+            '#' => "hash",
+            '$' => "dolar",
+            '%' => "procent",
+            '^' => "daszek",
+            '&' => "ampersand",
+            '*' => "gwiazdka",
+            '+' => "plus",
+            '=' => "równa się",
+            '"' => "cudzysłów",
+            '\'' => "apostrof",
+            '`' => "grawis",
+            '~' => "tylda",
+            '|' => "kreska pionowa",
+            // Dla liter i cyfr - po prostu znak
+            _ => char.IsUpper(c) ? $"duże {char.ToLower(c)}" : c.ToString()
+        };
     }
 
     /// <summary>

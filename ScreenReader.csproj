@@ -38,4 +38,11 @@
     <EmbeddedResource Include="SFX\*.ogg" />
   </ItemGroup>
 
+  <!-- Osadzone pliki .KEY z opisami skrótów klawiszowych -->
+  <ItemGroup>
+    <EmbeddedResource Include="key files\*.KEY">
+      <LogicalName>key_files.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>

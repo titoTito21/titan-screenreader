@@ -1205,7 +1205,6 @@ C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-wind
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\win-x64\hostfxr.dll
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\win-x64\hostpolicy.dll
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\win-x64\mscordaccore.dll
-C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\win-x64\mscordaccore_amd64_amd64_8.0.2225.52707.dll
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\win-x64\mscordbi.dll
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\win-x64\mscorrc.dll
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\win-x64\msquic.dll
@@ -1448,3 +1447,4 @@ C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\obj\Debug\net8.0-wind
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\obj\Debug\net8.0-windows10.0.19041.0\win-x64\ScreenReader.pdb
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\obj\Debug\net8.0-windows10.0.19041.0\win-x64\ScreenReader.genruntimeconfig.cache
 C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\obj\Debug\net8.0-windows10.0.19041.0\win-x64\ref\ScreenReader.dll
+C:\Users\win8k\OneDrive\projects\ScreenReader\ScreenReader\bin\Debug\net8.0-windows10.0.19041.0\win-x64\mscordaccore_amd64_amd64_8.0.2325.60607.dll

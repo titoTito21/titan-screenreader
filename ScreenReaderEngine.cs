@@ -13,6 +13,7 @@ using ScreenReader.Hints;
 using ScreenReader.Navigation;
 using ScreenReader.VirtualScreen;
 using ScreenReader.Speech;
+using ScreenReader.KeyboardShortcuts;
 using KeyboardHook = ScreenReader.Keyboard.KeyboardHookManager;
 
 namespace ScreenReader;
@@ -54,7 +55,7 @@ public class ScreenReaderEngine : IDisposable
     private readonly HintManager _hintManager;
     private readonly ImportantPlacesManager _importantPlacesManager;
     private readonly VirtualScreenManager _virtualScreenManager;
-    private readonly Menu.MenuShortcutAnnouncer _menuShortcutAnnouncer;
+    private readonly KeyFileManager _keyFileManager;
     private readonly AppModules.AppModuleManager _appModuleManager;
 
     private DialogMonitor? _dialogMonitor;
@@ -81,8 +82,8 @@ public class ScreenReaderEngine : IDisposable
     // Echo klawiatury
     private KeyboardEchoMode _keyboardEchoMode;
 
-    // Menu kontekstowe
-    private ScreenReaderContextMenu? _contextMenu;
+    // Menu dialog
+    private ScreenReaderMenuDialog? _menuDialog;
 
     // Tray icon
     private System.Windows.Forms.NotifyIcon? _trayIcon;
@@ -128,7 +129,7 @@ public class ScreenReaderEngine : IDisposable
         _hintManager = new HintManager(_speechManager);
         _importantPlacesManager = new ImportantPlacesManager(_speechManager, _soundManager);
         _virtualScreenManager = new VirtualScreenManager(_speechManager, _soundManager, _dialManager);
-        _menuShortcutAnnouncer = new Menu.MenuShortcutAnnouncer();
+        _keyFileManager = new KeyFileManager();
         _appModuleManager = new AppModules.AppModuleManager(_speechManager);
 
         // Podłącz eventy wirtualnego ekranu
@@ -328,38 +329,79 @@ public class ScreenReaderEngine : IDisposable
 
     /// <summary>
     /// Obsługa skrótów aplikacji (Ctrl+O, Alt+F, etc.)
-    /// Oznajmia nazwę komendy z menu jeśli znaleziona
+    /// Oznajmia nazwę komendy z pliku .KEY
     /// </summary>
-    private bool OnApplicationShortcutPressed(System.Windows.Forms.Keys key, bool ctrl, bool alt, bool shift)
+    private void OnApplicationShortcutPressed(System.Windows.Forms.Keys key, bool ctrl, bool alt, bool shift)
     {
         try
         {
-            // Pobierz aktywne okno
-            var foregroundWindow = AutomationElement.FromHandle(GetForegroundWindow());
-            if (foregroundWindow == null)
-                return false;
-
             // Zbuduj string skrótu
-            string shortcut = Menu.MenuShortcutAnnouncer.KeysToShortcutString(key, ctrl, alt, shift);
+            string shortcut = KeysToShortcutString(key, ctrl, alt, shift);
             Console.WriteLine($"ApplicationShortcut: {shortcut}");
 
-            // Sprawdź czy istnieje komenda menu dla tego skrótu
-            string? commandName = _menuShortcutAnnouncer.GetMenuCommandName(foregroundWindow, shortcut);
-
-            if (!string.IsNullOrEmpty(commandName))
+            // Sprawdź plik .KEY dla bieżącej aplikacji
+            if (!string.IsNullOrEmpty(_currentProcessName))
             {
-                // Wypowiedz nazwę komendy
-                _speechManager.Speak(commandName, interrupt: true);
-                Console.WriteLine($"Menu command: {commandName}");
+                string? commandName = _keyFileManager.GetShortcutDescription(_currentProcessName, shortcut);
+                if (!string.IsNullOrEmpty(commandName))
+                {
+                    Console.WriteLine($"KeyFile command: {commandName}");
+                    _speechManager.Speak(commandName, interrupt: true);
+                }
             }
-
-            return false; // Nie blokuj skrótu - pozwól aplikacji go obsłużyć
         }
         catch (Exception ex)
         {
             Console.WriteLine($"OnApplicationShortcutPressed Error: {ex.Message}");
-            return false;
         }
+    }
+
+    /// <summary>
+    /// Konwertuje skrót z Keys enum na string format
+    /// </summary>
+    private static string KeysToShortcutString(System.Windows.Forms.Keys keys, bool ctrl, bool alt, bool shift)
+    {
+        List<string> parts = new();
+
+        if (ctrl) parts.Add("Ctrl");
+        if (alt) parts.Add("Alt");
+        if (shift) parts.Add("Shift");
+
+        // Usuń modyfikatory z keys
+        var keyCode = keys & ~System.Windows.Forms.Keys.Modifiers;
+
+        // Konwertuj key code na string
+        string keyName = keyCode.ToString();
+
+        // Specjalne przypadki
+        keyName = keyName switch
+        {
+            "D0" => "0",
+            "D1" => "1",
+            "D2" => "2",
+            "D3" => "3",
+            "D4" => "4",
+            "D5" => "5",
+            "D6" => "6",
+            "D7" => "7",
+            "D8" => "8",
+            "D9" => "9",
+            "Oemcomma" => ",",
+            "OemPeriod" => ".",
+            "OemQuestion" => "/",
+            "OemSemicolon" => ";",
+            "OemQuotes" => "'",
+            "OemOpenBrackets" => "[",
+            "OemCloseBrackets" => "]",
+            "OemPipe" => "\\",
+            "OemMinus" => "-",
+            "Oemplus" => "+",
+            _ => keyName
+        };
+
+        parts.Add(keyName);
+
+        return string.Join("+", parts);
     }
 
     /// <summary>
@@ -534,8 +576,8 @@ public class ScreenReaderEngine : IDisposable
     /// </summary>
     private void OnCharacterDeleted(char ch)
     {
-        string phonetic = EditableText.EditableTextHandler.GetPhoneticForCharacter(ch);
-        _speechManager.Speak(phonetic);
+        string announcement = EditableText.EditableTextHandler.GetAnnouncementForCharacter(ch);
+        _speechManager.Speak(announcement);
     }
 
     /// <summary>
@@ -1592,6 +1634,9 @@ public class ScreenReaderEngine : IDisposable
 
     private void OnMoveToNextElement()
     {
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+
         var next = UIAutomationHelper.GetNextSibling(_currentElement);
         // Nawigacja globalna - działa wszędzie (pulpit, wszystkie okna)
         if (next != null && !IsWindowBoundary(next))
@@ -1617,6 +1662,9 @@ public class ScreenReaderEngine : IDisposable
 
     private void OnMoveToPreviousElement()
     {
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+
         var previous = UIAutomationHelper.GetPreviousSibling(_currentElement);
         // Nawigacja globalna - działa wszędzie (pulpit, wszystkie okna)
         if (previous != null && !IsWindowBoundary(previous))
@@ -1642,6 +1690,9 @@ public class ScreenReaderEngine : IDisposable
 
     private void OnMoveToParent()
     {
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+
         var parent = UIAutomationHelper.GetParent(_currentElement);
         // Nawigacja globalna - działa wszędzie, ale zatrzymaj się przed rootem
         if (parent != null && !IsWindowBoundary(parent))
@@ -1666,6 +1717,9 @@ public class ScreenReaderEngine : IDisposable
 
     private void OnMoveToFirstChild()
     {
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+
         var child = UIAutomationHelper.GetFirstChild(_currentElement);
         // Nawigacja globalna - działa wszędzie (pulpit, wszystkie okna)
         if (child != null && !IsWindowBoundary(child))
@@ -1693,6 +1747,9 @@ public class ScreenReaderEngine : IDisposable
     /// </summary>
     private void OnLinearMoveToNext()
     {
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+
         var next = GetNextElementLinear(_currentElement);
         // Nawigacja globalna - działa wszędzie (pulpit, wszystkie okna)
         if (next != null && !IsWindowBoundary(next))
@@ -1720,6 +1777,9 @@ public class ScreenReaderEngine : IDisposable
     /// </summary>
     private void OnLinearMoveToPrevious()
     {
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+
         var prev = GetPreviousElementLinear(_currentElement);
         // Nawigacja globalna - działa wszędzie (pulpit, wszystkie okna)
         if (prev != null && !IsWindowBoundary(prev))
@@ -1990,7 +2050,15 @@ public class ScreenReaderEngine : IDisposable
 
         if (System.Windows.Forms.Application.MessageLoop)
         {
-            _contextMenu ??= new ScreenReaderContextMenu(
+            // Zamknij poprzednie menu jeśli było otwarte
+            if (_menuDialog != null && !_menuDialog.IsDisposed)
+            {
+                _menuDialog.Close();
+                _menuDialog.Dispose();
+            }
+
+            // Utwórz nowy dialog menu
+            _menuDialog = new ScreenReaderMenuDialog(
                 onSettings: ShowSettings,
                 onHelp: ShowHelp,
                 onExit: () =>
@@ -2001,7 +2069,9 @@ public class ScreenReaderEngine : IDisposable
                 }
             );
 
-            _contextMenu.ShowCentered();
+            // Pokaż dialog
+            _menuDialog.Show();
+            _menuDialog.Activate();
         }
     }
 
@@ -2044,42 +2114,36 @@ public class ScreenReaderEngine : IDisposable
     // Edit field navigation handlers
     private void OnMoveToPreviousCharacter()
     {
-        Task.Run(async () =>
-        {
-            await Task.Delay(50);
-            _editableTextHandler.ReadCurrentCharacter();
-        });
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+        Task.Run(() => _editableTextHandler.ReadCurrentCharacter());
     }
 
     private void OnMoveToNextCharacter()
     {
-        Task.Run(async () =>
-        {
-            await Task.Delay(50);
-            _editableTextHandler.ReadCurrentCharacter();
-        });
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+        Task.Run(() => _editableTextHandler.ReadCurrentCharacter());
     }
 
     private void OnMoveToPreviousLine()
     {
-        Task.Run(async () =>
-        {
-            await Task.Delay(50);
-            _editableTextHandler.ReadCurrentLine();
-        });
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+        Task.Run(() => _editableTextHandler.ReadCurrentLine());
     }
 
     private void OnMoveToNextLine()
     {
-        Task.Run(async () =>
-        {
-            await Task.Delay(50);
-            _editableTextHandler.ReadCurrentLine();
-        });
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+        Task.Run(() => _editableTextHandler.ReadCurrentLine());
     }
 
     private void OnMoveToPreviousWord()
     {
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
         Task.Run(async () =>
         {
             await Task.Delay(50);
@@ -2089,29 +2153,19 @@ public class ScreenReaderEngine : IDisposable
 
     private void OnMoveToNextWord()
     {
-        Task.Run(async () =>
-        {
-            await Task.Delay(50);
-            _editableTextHandler.ReadCurrentWord();
-        });
+        // Natychmiast przerwij mowę dla responsywności
+        _speechManager.Stop();
+        Task.Run(() => _editableTextHandler.ReadCurrentWord());
     }
 
     private void OnMoveToStart()
     {
-        Task.Run(async () =>
-        {
-            await Task.Delay(50);
-            _speechManager.Speak("Początek");
-        });
+        _speechManager.Speak("Początek", interrupt: true);
     }
 
     private void OnMoveToEnd()
     {
-        Task.Run(async () =>
-        {
-            await Task.Delay(50);
-            _speechManager.Speak("Koniec");
-        });
+        _speechManager.Speak("Koniec", interrupt: true);
     }
 
     private void OnReadCurrentChar()
@@ -2314,11 +2368,11 @@ public class ScreenReaderEngine : IDisposable
 
             if (!string.IsNullOrEmpty(groupName))
             {
-                _speechManager.Speak($"{groupName}, grupa");
+                _speechManager.Speak($"{groupName}, grupa", interrupt: true);
             }
             else
             {
-                _speechManager.Speak("Grupa");
+                _speechManager.Speak("Grupa", interrupt: true);
             }
 
             _soundManager.PlayCursor();
@@ -2408,7 +2462,7 @@ public class ScreenReaderEngine : IDisposable
             var name = element.Current.Name;
             if (!string.IsNullOrWhiteSpace(name))
             {
-                _speechManager.Speak(name);
+                _speechManager.Speak(name, interrupt: true);
             }
             _soundManager.PlayCanInteract();
             return;
@@ -2417,7 +2471,8 @@ public class ScreenReaderEngine : IDisposable
         // Powiadom moduł przed ogłoszeniem
         _appModuleManager.BeforeAnnounceElement(element);
 
-        _speechManager.Speak(description);
+        // Użyj interrupt:true dla responsywności nawigacji
+        _speechManager.Speak(description, interrupt: true);
 
         if (UIAutomationHelper.IsListItem(element))
         {
@@ -3359,7 +3414,7 @@ public class ScreenReaderEngine : IDisposable
         _speechManager.Dispose();
         _dialogMonitor?.Dispose();
         _trayIcon?.Dispose();
-        _contextMenu?.Dispose();
+        _menuDialog?.Dispose();
         _nvdaBridge?.Dispose();
 
         Instance = null;

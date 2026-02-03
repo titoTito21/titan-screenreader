@@ -210,10 +210,10 @@ public class KeyboardHookManager : IDisposable
 
     /// <summary>
     /// Event wywoływany gdy użytkownik naciśnie skrót aplikacji (Ctrl+coś, Alt+coś, etc.)
-    /// Parametry: (Keys key, bool ctrl, bool alt, bool shift)
-    /// Zwraca true jeśli skrót został obsłużony (blokuje domyślną akcję)
+    /// Używany tylko do ogłaszania nazw komend z plików .KEY
+    /// NIE blokuje klawiszy - wszystkie skróty są przepuszczane do systemu
     /// </summary>
-    public event Func<Keys, bool, bool, bool, bool>? ApplicationShortcutPressed;
+    public event Action<Keys, bool, bool, bool>? ApplicationShortcutPressed;
 
     public void Start()
     {
@@ -415,7 +415,16 @@ public class KeyboardHookManager : IDisposable
     {
         try
         {
-            if (nCode >= 0)
+            // WAŻNE: Zawsze wywołaj CallNextHookEx na końcu
+            // Nigdy nie blokuj całego łańcucha hooków
+
+            if (nCode < 0)
+            {
+                // Negative nCode = nie przetwarzaj, tylko przekaż dalej
+                return CallNextHookEx(_hookID, nCode, wParam, lParam);
+            }
+
+            try
             {
                 var hookStruct = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
                 int vkCode = (int)hookStruct.vkCode;
@@ -425,27 +434,58 @@ public class KeyboardHookManager : IDisposable
                 bool isKeyUp = wParam == (IntPtr)WM_KEYUP || wParam == (IntPtr)WM_SYSKEYUP;
 
                 // Aktualizuj stan modyfikatorów
-                UpdateModifierState(vkCode, flags, isKeyDown);
+                try
+                {
+                    UpdateModifierState(vkCode, flags, isKeyDown);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"KeyboardHookManager: Błąd UpdateModifierState: {ex.Message}");
+                }
 
                 if (isKeyDown)
                 {
-                    bool handled = ProcessKeyDown(vkCode, flags);
-                    if (handled)
-                        return (IntPtr)1; // Blokuj klawisz
+                    try
+                    {
+                        // Przetwórz klawisz synchronicznie (szybko)
+                        bool handled = ProcessKeyDown(vkCode, flags);
+                        if (handled)
+                        {
+                            // Blokuj klawisz - nie przekazuj do aplikacji
+                            return (IntPtr)1;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"KeyboardHookManager: Błąd ProcessKeyDown: {ex.Message}");
+                        // Przepuść klawisz w przypadku błędu
+                    }
                 }
 
-                // Wykryj zmiany stanu klawiszy blokujących po puszczeniu klawisza
+                // Wykryj zmiany stanu klawiszy blokujących
                 if (isKeyUp && _toggleStatesInitialized)
                 {
-                    CheckToggleKeyStateChanges(vkCode);
+                    try
+                    {
+                        CheckToggleKeyStateChanges(vkCode);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"KeyboardHookManager: Błąd CheckToggleKeyStateChanges: {ex.Message}");
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"KeyboardHookManager: Błąd parsowania hooka: {ex.Message}");
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"KeyboardHookManager: Błąd w hook: {ex.Message}");
+            Console.WriteLine($"KeyboardHookManager: Błąd krytyczny w hook: {ex.Message}");
         }
 
+        // ZAWSZE przekaż do następnego hooka
         return CallNextHookEx(_hookID, nCode, wParam, lParam);
     }
 
@@ -498,68 +538,109 @@ public class KeyboardHookManager : IDisposable
 
     /// <summary>
     /// Przetwarza naciśnięcie klawisza
+    /// ZASADA: Blokuj TYLKO gesty screen readera (Insert+klawisz, quick nav, numpad)
+    /// WSZYSTKO INNE (Alt+cokolwiek, Ctrl+cokolwiek) - PRZEPUŚĆ DO SYSTEMU
     /// </summary>
     private bool ProcessKeyDown(int vkCode, int flags)
     {
-        // Sprawdź czy to klawisz Insert sam w sobie
-        if (vkCode == InsertKeyHandler.VK_INSERT)
+        // ========================================
+        // NIGDY NIE BLOKUJ MODYFIKATORÓW
+        // ========================================
+        if (vkCode == InsertKeyHandler.VK_INSERT || // Insert
+            vkCode == 0x12 || vkCode == 0xA4 || vkCode == 0xA5 || // Alt (VK_MENU, VK_LMENU, VK_RMENU)
+            vkCode == 0x11 || vkCode == 0xA2 || vkCode == 0xA3 || // Ctrl
+            vkCode == 0x10 || vkCode == 0xA0 || vkCode == 0xA1)   // Shift
         {
-            // Nie blokuj samego Insert
             return false;
         }
 
-        // Wykryj skróty aplikacji (Ctrl+coś, Alt+coś, Ctrl+Shift+coś)
-        // Nie blokujemy Insert+coś (to są gesty screen readera)
-        if (!_insertPressed && ((_ctrlPressed && !_altPressed) || (_altPressed && !_ctrlPressed) || (_ctrlPressed && _altPressed) || (_ctrlPressed && _shiftPressed && !_altPressed)))
+        // ========================================
+        // OGŁASZANIE SKRÓTÓW (ale nie blokowanie!)
+        // ========================================
+        // Ogłoś nazwy komend dla skrótów Ctrl/Alt/Shift (z plików .KEY)
+        if (!_insertPressed && (_ctrlPressed || _altPressed || _shiftPressed))
         {
-            // Nie ogłaszaj samych modyfikatorów
-            if (vkCode != 0x11 && vkCode != 0xA2 && vkCode != 0xA3 && // Ctrl
-                vkCode != 0x12 && vkCode != 0xA4 && vkCode != 0xA5 && // Alt
-                vkCode != 0x10 && vkCode != 0xA0 && vkCode != 0xA1)   // Shift
+            try
             {
-                if (ApplicationShortcutPressed != null)
-                {
-                    Keys key = (Keys)vkCode;
-                    bool handled = ApplicationShortcutPressed(key, _ctrlPressed, _altPressed, _shiftPressed);
-                    // Nie blokujemy skrótów aplikacji - pozwalamy im działać normalnie
-                    // (handled może być użyte w przyszłości jeśli chcemy blokować niektóre skróty)
-                }
+                ApplicationShortcutPressed?.Invoke((Keys)vkCode, _ctrlPressed, _altPressed, _shiftPressed);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"KeyboardHookManager: Błąd ApplicationShortcutPressed: {ex.Message}");
+            }
+
+            // NIE BLOKUJ - przepuść do systemu
+            return false;
+        }
+
+        // ========================================
+        // GESTY SCREEN READERA (Insert+klawisz) - BLOKUJ
+        // ========================================
+        if (_insertPressed && GestureProcessed != null)
+        {
+            try
+            {
+                bool handled = GestureProcessed(vkCode, flags, _ctrlPressed, _altPressed, _shiftPressed, _insertPressed);
+                if (handled)
+                    return true; // BLOKUJ - to jest gest screen readera
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"KeyboardHookManager: Błąd GestureProcessed: {ex.Message}");
             }
         }
 
-        // Sprawdź gesty (Insert+...)
-        if (_insertPressed && GestureProcessed != null)
-        {
-            bool handled = GestureProcessed(vkCode, flags, _ctrlPressed, _altPressed, _shiftPressed, _insertPressed);
-            if (handled)
-                return true;
-        }
-
-        // Sprawdź szybką nawigację (pojedyncze litery w browse mode)
-        if (!_ctrlPressed && !_altPressed && !_insertPressed)
+        // ========================================
+        // QUICK NAVIGATION (pojedyncze litery w browse mode) - BLOKUJ
+        // ========================================
+        if (!_ctrlPressed && !_altPressed && !_insertPressed && !_shiftPressed)
         {
             char? ch = VkCodeToChar(vkCode);
             if (ch.HasValue && QuickNavProcessed != null)
             {
-                bool handled = QuickNavProcessed(ch.Value, _shiftPressed);
-                if (handled)
-                    return true;
+                try
+                {
+                    bool handled = QuickNavProcessed(ch.Value, _shiftPressed);
+                    if (handled)
+                        return true; // BLOKUJ - to jest quick nav w browse mode
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"KeyboardHookManager: Błąd QuickNavProcessed: {ex.Message}");
+                }
             }
         }
 
-        // Ctrl+Shift+Backslash - menu
-        if (_ctrlPressed && _shiftPressed && vkCode == 0xDC)
+        // ========================================
+        // MENU SCREEN READERA (Ctrl+Shift+Backslash) - BLOKUJ
+        // ========================================
+        if (_ctrlPressed && _shiftPressed && vkCode == 0xDC && !_altPressed)
         {
-            ShowMenu?.Invoke();
-            return true;
+            try
+            {
+                ShowMenu?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"KeyboardHookManager: Błąd ShowMenu: {ex.Message}");
+            }
+            return true; // BLOKUJ - to jest gest screen readera
         }
 
-        // Zwykły Enter (z flagą EXTENDED) - normalne działanie, ogłoś kliknięcie ale nie blokuj
-        // NumPad Enter jest obsługiwany osobno w ProcessNumpadNavigation
+        // ========================================
+        // ENTER - ogłoś ale NIE BLOKUJ
+        // ========================================
         if (vkCode == 0x0D && (flags & LLKHF_EXTENDED) != 0)
         {
-            ClickAction?.Invoke();
-            return false;
+            try
+            {
+                ClickAction?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"KeyboardHookManager: Błąd ClickAction: {ex.Message}");
+            }
+            return false; // NIE BLOKUJ
         }
 
         // ========================================
@@ -669,77 +750,70 @@ public class KeyboardHookManager : IDisposable
         }
 
         // ========================================
-        // NAWIGACJA NUMPADEM (jak w NVDA)
-        // Działa przy wyłączonym NumLock
-        // NumPad 4 = lewo (poprzedni element)
-        // NumPad 6 = prawo (następny element)
-        // NumPad 8 = góra (rodzic)
-        // NumPad 2 = dół (potomek)
-        // NumPad 5 = odczytaj bieżący element
+        // NAWIGACJA NUMPADEM (jak w NVDA) - BLOKUJ
         // ========================================
         if (NumpadNavigationEnabled && !IsNumLockOn() && IsNumpadKey(vkCode, flags))
         {
             bool handled = ProcessNumpadNavigation(vkCode);
             if (handled)
-                return true;
-        }
-
-        // Ctrl+Alt+... - skróty czytnika ekranu (blokują klawisze)
-        // Zachowane dla kompatybilności wstecznej
-        if (_ctrlPressed && _altPressed)
-        {
-            return ProcessCtrlAltShortcut(vkCode);
+                return true; // BLOKUJ - to jest nawigacja screen readera
         }
 
         // ========================================
-        // STRZAŁKI W BROWSE MODE (nie w polu edycyjnym)
-        // Blokujemy klawisze i obsługujemy nawigację w wirtualnym buforze
+        // STRZAŁKI W BROWSE MODE - BLOKUJ
         // ========================================
-        if (IsInBrowseMode && !IsInEditField && !_altPressed && !_insertPressed)
+        if (IsInBrowseMode && !IsInEditField && !_altPressed && !_insertPressed && !_ctrlPressed)
         {
             bool isArrowKey = vkCode == 0x25 || vkCode == 0x27 || vkCode == 0x26 || vkCode == 0x28 ||
                               vkCode == 0x24 || vkCode == 0x23; // Left, Right, Up, Down, Home, End
 
             if (isArrowKey && BrowseModeArrowNavigation != null)
             {
-                bool handled = BrowseModeArrowNavigation(vkCode, _ctrlPressed);
+                bool handled = BrowseModeArrowNavigation(vkCode, false); // Zawsze false dla Ctrl
                 if (handled)
-                    return true; // Blokuj klawisz - browse mode obsłużył
+                    return true; // BLOKUJ - to jest nawigacja w browse mode
             }
         }
 
-        // Ctrl+strzałki (bez Alt) - nawigacja po słowach (w polach edycyjnych)
-        // NIE blokujemy - pozwalamy systemowi przesunąć kursor, ale ogłaszamy słowo
+        // ========================================
+        // NAWIGACJA W POLACH EDYCYJNYCH - NIE BLOKUJ (tylko ogłaszaj)
+        // ========================================
+        // Ctrl+strzałki - nawigacja po słowach
         if (_ctrlPressed && !_altPressed && !_insertPressed && IsInEditField)
         {
             ProcessCtrlArrowNavigation(vkCode);
-            // Zwracamy false - nie blokujemy, klawisz idzie do systemu
+            return false; // NIE BLOKUJ
         }
 
-        // Strzałki bez modyfikatorów w polu edycyjnym - nawigacja po znakach/liniach
-        // NIE blokujemy - pozwalamy systemowi przesunąć kursor, ale ogłaszamy znak/linię
+        // Strzałki bez modyfikatorów - nawigacja po znakach/liniach
         if (!_ctrlPressed && !_altPressed && !_insertPressed && IsInEditField)
         {
             ProcessArrowNavigation(vkCode);
-            // Zwracamy false - nie blokujemy, klawisz idzie do systemu
+            return false; // NIE BLOKUJ
         }
 
-        // Strzałki góra/dół w ComboBox - odczytaj wybrane elementy
-        // NIE blokujemy - pozwalamy systemowi zmienić wybór, ale ogłaszamy element
+        // ComboBox - strzałki góra/dół
         if (!_ctrlPressed && !_altPressed && !_insertPressed && IsInComboBox)
         {
             if (vkCode == VK_UP || vkCode == VK_DOWN)
             {
                 ComboBoxArrowNavigation?.Invoke(vkCode);
             }
+            return false; // NIE BLOKUJ
         }
 
-        // Echo klawiatury - przechwytuj wpisywane znaki (tylko w polu edycyjnym)
+        // ========================================
+        // ECHO KLAWIATURY - NIE BLOKUJ
+        // ========================================
         if (IsInEditField && !_ctrlPressed && !_altPressed && !_insertPressed)
         {
             ProcessTypedCharacter(vkCode);
+            return false; // NIE BLOKUJ
         }
 
+        // ========================================
+        // DOMYŚLNIE: NIE BLOKUJ NICZEGO
+        // ========================================
         return false;
     }
 
