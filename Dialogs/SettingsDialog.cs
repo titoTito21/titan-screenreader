@@ -620,10 +620,10 @@ public class SettingsDialog : Form
 
         int yPos = 10;
 
-        // Nawigacja zaawansowana
+        // Nawigacja obiektowa strzałkami
         _chkAdvancedNavigation = new CheckBox
         {
-            Text = "Nawigacja zaawansowana",
+            Text = "Nawigacja obiektowa strzałkami",
             Left = 10,
             Top = yPos,
             Width = 450,

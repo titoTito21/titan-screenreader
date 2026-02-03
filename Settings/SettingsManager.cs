@@ -293,7 +293,7 @@ public class SettingsManager
         SetValue(SECTION_VERBOSITY, KEY_TOGGLE_KEYS_MODE, "SpeechAndSound");
 
         // ========== Navigation ==========
-        SetValue(SECTION_NAVIGATION, KEY_ADVANCED_NAVIGATION, "true");
+        SetValue(SECTION_NAVIGATION, KEY_ADVANCED_NAVIGATION, "false");
         SetValue(SECTION_NAVIGATION, KEY_ANNOUNCE_CONTROL_TYPES_NAV, "true");
         SetValue(SECTION_NAVIGATION, KEY_ANNOUNCE_HIERARCHY_LEVEL, "true");
         SetValue(SECTION_NAVIGATION, KEY_WINDOW_BOUNDS_MODE, "SpeechAndSound");

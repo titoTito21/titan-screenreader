@@ -778,14 +778,15 @@ public class KeyboardHookManager : IDisposable
         // ========================================
         // NAWIGACJA W POLACH EDYCYJNYCH - NIE BLOKUJ (tylko ogłaszaj)
         // ========================================
-        // Ctrl+strzałki - nawigacja po słowach
+        // Ctrl+strzałki (z lub bez Shift) - nawigacja po słowach/zaznaczanie słów
         if (_ctrlPressed && !_altPressed && !_insertPressed && IsInEditField)
         {
             ProcessCtrlArrowNavigation(vkCode);
             return false; // NIE BLOKUJ
         }
 
-        // Strzałki bez modyfikatorów - nawigacja po znakach/liniach
+        // Strzałki bez Ctrl (z lub bez Shift) - nawigacja po znakach/liniach/zaznaczanie
+        // Shift+strzałki = zaznaczanie (też ogłaszamy znaki/linie)
         if (!_ctrlPressed && !_altPressed && !_insertPressed && IsInEditField)
         {
             ProcessArrowNavigation(vkCode);

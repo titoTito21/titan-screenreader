@@ -68,6 +68,7 @@ public class ScreenReaderEngine : IDisposable
     private AutomationElement? _lastMenuBar; // Pasek menu dla bieżącego menu
     private bool _isInMenu; // Czy aktualnie jesteśmy w menu
     private bool _isInMenuBar; // Czy aktualnie jesteśmy w pasku menu
+    private bool _isInList; // Czy aktualnie jesteśmy w liście
     private int _hierarchyLevel; // Bieżący poziom hierarchii dla nawigacji obiektowej
     private bool _disposed;
     private System.Threading.Timer? _hookHealthTimer; // Timer dla sprawdzania stanu hooka
@@ -791,8 +792,8 @@ public class ScreenReaderEngine : IDisposable
             _speechManager.Speak(welcomeMessage);
         }
 
-        // Załaduj ustawienia nawigacji zaawansowanej
-        _keyboardHook.IsLinearNavigationMode = !_settings.AdvancedNavigation;
+        // Załaduj ustawienia nawigacji i modyfikatora
+        ApplyNavigationSettings();
 
         // Inicjalizuj menedżera dostępności z włączonymi API
         _accessibilityManager.SetApiEnabled(AccessibilityAPI.UIAutomation, true);
@@ -838,6 +839,57 @@ public class ScreenReaderEngine : IDisposable
         Console.WriteLine("  NumPad + / CapsLock+;: Przełącz nawigację liniową/zaawansowaną");
         Console.WriteLine("  Ctrl+Alt+S: Zatrzymaj mowę");
         Console.WriteLine("  Ctrl+Shift+\\: Menu czytnika");
+    }
+
+    /// <summary>
+    /// Stosuje ustawienia nawigacji z SettingsManager
+    /// </summary>
+    private void ApplyNavigationSettings()
+    {
+        _keyboardHook.IsLinearNavigationMode = !_settings.AdvancedNavigation;
+        _keyboardHook.NVDAModifierConfig = ConvertModifierSetting(_settings.Modifier);
+        Console.WriteLine($"Zastosowano ustawienia nawigacji: AdvancedNavigation={_settings.AdvancedNavigation}, Modifier={_settings.Modifier}");
+    }
+
+    /// <summary>
+    /// Konwertuje ScreenReaderModifier na NVDAModifierConfig
+    /// </summary>
+    private NVDAModifierConfig ConvertModifierSetting(ScreenReaderModifier modifier)
+    {
+        return modifier switch
+        {
+            ScreenReaderModifier.Insert => NVDAModifierConfig.NumpadInsert | NVDAModifierConfig.ExtendedInsert,
+            ScreenReaderModifier.CapsLock => NVDAModifierConfig.CapsLock,
+            ScreenReaderModifier.InsertAndCapsLock => NVDAModifierConfig.Default,
+            _ => NVDAModifierConfig.Default
+        };
+    }
+
+    /// <summary>
+    /// Przeładowuje wszystkie ustawienia z SettingsManager i stosuje je
+    /// </summary>
+    public void ReloadSettings()
+    {
+        Console.WriteLine("Przeładowywanie ustawień...");
+
+        // Przeładuj ustawienia z pliku
+        _settings.Load();
+
+        // Zastosuj ustawienia nawigacji i modyfikatora
+        ApplyNavigationSettings();
+
+        // Zastosuj echo klawiatury
+        var setting = _settings.KeyboardEcho;
+        _keyboardEchoMode = setting switch
+        {
+            KeyboardEchoSetting.None => KeyboardEchoMode.None,
+            KeyboardEchoSetting.Characters => KeyboardEchoMode.Characters,
+            KeyboardEchoSetting.Words => KeyboardEchoMode.Words,
+            KeyboardEchoSetting.CharactersAndWords => KeyboardEchoMode.WordsAndChars,
+            _ => KeyboardEchoMode.WordsAndChars
+        };
+
+        Console.WriteLine("Ustawienia przeładowane i zastosowane");
     }
 
     private async void OnFocusChanged(AutomationElement element)
@@ -2094,6 +2146,9 @@ public class ScreenReaderEngine : IDisposable
                 settingsDialog.TopMost = true;
                 settingsDialog.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
                 System.Windows.Forms.Application.Run(settingsDialog);
+
+                // Przeładuj ustawienia po zamknięciu dialogu
+                ReloadSettings();
             }
             catch (Exception ex)
             {
@@ -2116,28 +2171,48 @@ public class ScreenReaderEngine : IDisposable
     {
         // Natychmiast przerwij mowę dla responsywności
         _speechManager.Stop();
-        Task.Run(() => _editableTextHandler.ReadCurrentCharacter());
+        // Małe opóźnienie (20ms) aby kursor zdążył się przesunąć w aplikacji
+        Task.Run(async () =>
+        {
+            await Task.Delay(20);
+            _editableTextHandler.ReadCurrentCharacter();
+        });
     }
 
     private void OnMoveToNextCharacter()
     {
         // Natychmiast przerwij mowę dla responsywności
         _speechManager.Stop();
-        Task.Run(() => _editableTextHandler.ReadCurrentCharacter());
+        // Małe opóźnienie (20ms) aby kursor zdążył się przesunąć w aplikacji
+        Task.Run(async () =>
+        {
+            await Task.Delay(20);
+            _editableTextHandler.ReadCurrentCharacter();
+        });
     }
 
     private void OnMoveToPreviousLine()
     {
         // Natychmiast przerwij mowę dla responsywności
         _speechManager.Stop();
-        Task.Run(() => _editableTextHandler.ReadCurrentLine());
+        // Małe opóźnienie (20ms) aby kursor zdążył się przesunąć w aplikacji
+        Task.Run(async () =>
+        {
+            await Task.Delay(20);
+            _editableTextHandler.ReadCurrentLine();
+        });
     }
 
     private void OnMoveToNextLine()
     {
         // Natychmiast przerwij mowę dla responsywności
         _speechManager.Stop();
-        Task.Run(() => _editableTextHandler.ReadCurrentLine());
+        // Małe opóźnienie (20ms) aby kursor zdążył się przesunąć w aplikacji
+        Task.Run(async () =>
+        {
+            await Task.Delay(20);
+            _editableTextHandler.ReadCurrentLine();
+        });
     }
 
     private void OnMoveToPreviousWord()
@@ -2146,6 +2221,8 @@ public class ScreenReaderEngine : IDisposable
         _speechManager.Stop();
         Task.Run(async () =>
         {
+            // Małe opóźnienie (20ms) aby kursor zdążył się przesunąć
+            await Task.Delay(20);
             await Task.Delay(50);
             _editableTextHandler.ReadCurrentWord();
         });
@@ -2155,7 +2232,12 @@ public class ScreenReaderEngine : IDisposable
     {
         // Natychmiast przerwij mowę dla responsywności
         _speechManager.Stop();
-        Task.Run(() => _editableTextHandler.ReadCurrentWord());
+        Task.Run(async () =>
+        {
+            // Małe opóźnienie (20ms) aby kursor zdążył się przesunąć
+            await Task.Delay(20);
+            _editableTextHandler.ReadCurrentWord();
+        });
     }
 
     private void OnMoveToStart()
@@ -2244,6 +2326,7 @@ public class ScreenReaderEngine : IDisposable
                 if (_currentListParent == null)
                 {
                     enteredNewList = true;
+                    _isInList = false; // Resetuj przy wejściu do nowej listy
                     Console.WriteLine($"[AnnounceElement] Wchodzimy do nowej listy (poprzednio brak kontekstu)");
                 }
                 else
@@ -2253,6 +2336,7 @@ public class ScreenReaderEngine : IDisposable
                         enteredNewList = !Automation.Compare(listParent, _currentListParent);
                         if (enteredNewList)
                         {
+                            _isInList = false; // Resetuj przy wejściu do INNEJ listy
                             Console.WriteLine($"[AnnounceElement] Wchodzimy do INNEJ listy");
                         }
                         else
@@ -2263,6 +2347,7 @@ public class ScreenReaderEngine : IDisposable
                     catch
                     {
                         enteredNewList = true;
+                        _isInList = false; // Resetuj przy błędzie
                         Console.WriteLine($"[AnnounceElement] Błąd porównania list - traktujemy jako nową listę");
                     }
                 }
@@ -2309,6 +2394,7 @@ public class ScreenReaderEngine : IDisposable
                 {
                     Console.WriteLine($"[AnnounceElement] Element NIE jest potomkiem aktualnej listy - resetuję kontekst");
                     _currentListParent = null;
+                    _isInList = false;
                 }
             }
             catch (Exception ex)
@@ -2316,11 +2402,16 @@ public class ScreenReaderEngine : IDisposable
                 // W razie błędu, zresetuj kontekst listy
                 Console.WriteLine($"[AnnounceElement] Błąd sprawdzania hierarchii: {ex.Message} - resetuję kontekst");
                 _currentListParent = null;
+                _isInList = false;
             }
         }
         else
         {
             Console.WriteLine($"[AnnounceElement] Element NIE jest elementem listy i brak kontekstu listy");
+            if (_isInList)
+            {
+                _isInList = false;
+            }
         }
 
         // Sprawdź czy wchod zimy do grupy (ale nie z nawigacji obiektowej)
@@ -2409,32 +2500,67 @@ public class ScreenReaderEngine : IDisposable
             }
         }
 
-        // Jeśli weszliśmy do nowej listy, użyj uproszczonego formatu
+        // Diagnostyka dla list
+        Console.WriteLine($"[AnnounceElement] Diagnostyka list: enteredNewList={enteredNewList}, listParent={(listParent != null ? "NOT NULL" : "NULL")}, _isInList={_isInList}, AnnounceBlockControls={_settings.AnnounceBlockControls}");
+
+        // Jeśli weszliśmy do nowej listy, ogłoś TYLKO nazwę listy (bez elementu)
+        // Dopiero przy kolejnym elemencie ogłaszaj normalnie
         if (enteredNewList && listParent != null && _settings.AnnounceBlockControls)
         {
             var listLabel = UIAutomationHelper.GetListLabel(listParent);
-            var itemName = elementInfo.Name ?? "element";
+            Console.WriteLine($"[AnnounceElement] listLabel='{listLabel}'");
 
-            if (!string.IsNullOrEmpty(listLabel))
+            // Jeśli to pierwszy kontakt z listą (!_isInList), ogłoś TYLKO listę
+            if (!_isInList)
             {
-                // Format: "{nazwa listy}, lista, {nazwa elementu}"
-                description = $"{listLabel}, lista, {itemName}";
-                Console.WriteLine($"[AnnounceElement] Ogłaszam wejście do nowej listy: '{listLabel}, lista, {itemName}'");
+                _isInList = true;
+
+                if (!string.IsNullOrEmpty(listLabel))
+                {
+                    // Format: "{nazwa listy}, lista"
+                    _speechManager.Speak($"{listLabel}, lista", interrupt: true);
+                    Console.WriteLine($"[AnnounceElement] ✓ Pierwsze wejście do listy: '{listLabel}, lista'");
+                }
+                else
+                {
+                    // Format: "lista"
+                    _speechManager.Speak("Lista", interrupt: true);
+                    Console.WriteLine($"[AnnounceElement] ✓ Pierwsze wejście do listy (bez etykiety): 'Lista'");
+                }
+
+                _soundManager.PlayCursor();
+                Console.WriteLine($"[AnnounceElement] ✓ RETURN - nie ogłaszam elementu");
+                return; // Nie ogłaszaj elementu w tym momencie
+            }
+            // Jeśli już jesteśmy w liście (_isInList), ogłaszaj normalnie element
+            // (nie zmieniamy description, zostanie ogłoszony standardowo poniżej)
+            Console.WriteLine($"[AnnounceElement] Kolejny element w tej samej liście - ogłaszam normalnie (_isInList=true)");
+        }
+        else
+        {
+            if (enteredNewList && listParent != null && !_settings.AnnounceBlockControls)
+            {
+                Console.WriteLine($"[AnnounceElement] ✗ Weszliśmy do nowej listy, ale AnnounceBlockControls jest WYŁĄCZONE");
+            }
+            else if (enteredNewList && listParent == null)
+            {
+                Console.WriteLine($"[AnnounceElement] ✗ enteredNewList=true ale listParent=null");
+            }
+            else if (!enteredNewList && listParent != null)
+            {
+                Console.WriteLine($"[AnnounceElement] ✗ listParent nie null ale enteredNewList=false (jesteśmy już w liście)");
             }
             else
             {
-                // Format: "lista, {nazwa elementu}"
-                description = $"Lista, {itemName}";
-                Console.WriteLine($"[AnnounceElement] Ogłaszam wejście do nowej listy (bez etykiety): 'Lista, {itemName}'");
+                Console.WriteLine($"[AnnounceElement] ✗ Warunek nie spełniony - ogłaszam normalnie");
             }
         }
-        else if (enteredNewList && listParent != null && !_settings.AnnounceBlockControls)
+
+        // Jeśli wyszliśmy z listy, zresetuj flagę
+        if (!UIAutomationHelper.IsListItem(element) && _isInList)
         {
-            Console.WriteLine($"[AnnounceElement] Weszliśmy do nowej listy, ale AnnounceBlockControls jest WYŁĄCZONE");
-        }
-        else if (enteredNewList && listParent == null)
-        {
-            Console.WriteLine($"[AnnounceElement] enteredNewList=true ale listParent=null - coś poszło nie tak");
+            _isInList = false;
+            Console.WriteLine($"[AnnounceElement] Wyszliśmy z listy - resetuję flagę _isInList");
         }
 
         // Jeśli to element menu, dodaj skrót klawiszowy jeśli istnieje
